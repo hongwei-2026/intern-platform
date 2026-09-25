@@ -1,0 +1,23 @@
+TO: feizi_050920@qq.com
+SUBJECT: 【开源实习】申请未通过通知 / Application Not Accepted
+
+尊敬的 于鸿伟：
+
+很抱歉地通知您：您申请的项目「SpMV 开源实习演示项目」未通过导师审核。
+
+您可以登录实习平台查看详情，或继续浏览并申请其他项目。
+如有疑问，请通过平台留言与导师沟通。
+
+—— 华科开放原子开源俱乐部 · 开源实习管理系统
+
+--------------------
+
+Dear 于鸿伟,
+
+We regret to inform you that your application for the project "SpMV 开源实习演示项目" was not accepted by the mentor.
+
+You may log in to the internship platform for details, or browse and apply for other projects.
+If you have questions, please contact the mentor via the platform messaging feature.
+
+— HUST OpenAtom Open-Source Internship Platform
+

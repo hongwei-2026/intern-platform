@@ -1,0 +1,29 @@
+{
+  "name": "intern-platform-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 5173",
+    "typecheck": "vue-tsc --noEmit",
+    "check:templates": "node scripts/check-vue-templates.mjs",
+    "check:compile": "node scripts/check-vue-compile.mjs",
+    "check:structure": "node scripts/check-vue-structure.mjs",
+    "ci": "npm run check:templates && npm run check:compile && npm run check:structure && npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "pdfjs-dist": "^4.10.38",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

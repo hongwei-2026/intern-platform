@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API (pytest + regression)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate project-design PDF template
+        run: python scripts/generate_design_pdf.py
+
+      - name: Verify sample PDF magic
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for p in (
+              Path("data/samples/project-design-template.pdf"),
+              Path("apps/web/public/samples/project-design-template.pdf"),
+          ):
+              assert p.is_file(), p
+              assert p.read_bytes().startswith(b"%PDF"), p
+              print("ok", p, p.stat().st_size)
+          PY
+
+      - name: Pytest (incl. regression guards)
+        env:
+          PYTHONUTF8: "1"
+        run: pytest -q --tb=short
+
+      - name: Alembic upgrade (fresh sqlite)
+        env:
+          DB_DRIVER: sqlite
+          DATABASE_URL: sqlite:////tmp/intern-ci.db
+        run: |
+          mkdir -p /tmp
+          alembic upgrade head
+          python - <<'PY'
+          from sqlalchemy import create_engine, inspect
+          eng = create_engine("sqlite:////tmp/intern-ci.db")
+          cols = {c["name"] for c in inspect(eng).get_columns("communities")}
+          assert "invite_code" in cols, cols
+          for need in ("homepage_url", "gitea_org_url", "logo_url", "description", "tags", "intro_body"):
+              assert need in cols, (need, cols)
+          print("communities columns ok")
+          PY
+
+  web:
+    name: Web (guards + typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate PDF sample for public/
+        working-directory: .
+        run: python scripts/generate_design_pdf.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Regression guards (template TS / SFC compile / structure)
+        run: |
+          npm run check:templates
+          npm run check:compile
+          npm run check:structure
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
