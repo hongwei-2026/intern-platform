@@ -17,6 +17,7 @@ apps/web/dist/
 .ruff_cache/
 data/*.db
 data/*.db-*
+data/oauth_clients.json
 uploads/
 *.log
 .DS_Store
