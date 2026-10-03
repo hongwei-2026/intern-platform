@@ -8,7 +8,7 @@ import string
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from intern_platform.dependencies.auth import AuthUser
+from intern_platform.dependencies.auth import AuthUser, hash_password
 from intern_platform.dependencies.ledger import LedgerRequestContext
 from intern_platform.models.community import Community
 from intern_platform.models.community_extension import CommunityExtension
@@ -201,9 +201,55 @@ class CommunityService:
         self.session.add(community)
         self.session.flush()
         self.session.add(CommunityExtension(community_id=community.id))
+        if auth.has_role("committee") and (body.admin_email or "").strip():
+            community.status = "approved"
+            community.reviewed_by = auth.id
+            if not community.invite_code:
+                community.invite_code = _gen_invite_code(community.name)
+            self._bind_community_admin(
+                community,
+                email=body.admin_email or "",
+                display_name=body.admin_name or "",
+            )
         self.session.commit()
         self.session.refresh(community)
         return community
+
+    def _bind_community_admin(self, community: Community, *, email: str, display_name: str) -> None:
+        """组委会开通社区时同时建立该社区的组织账号。"""
+        from intern_platform.models.user import User
+
+        email_n = email.strip().lower()
+        if "@" not in email_n:
+            raise ValueError("管理员邮箱格式不正确")
+        admin_role = self.session.scalar(select(Role).where(Role.code == "community_admin"))
+        if admin_role is None:
+            raise LookupError("系统未配置 community_admin 角色")
+        user = self.session.scalar(select(User).where(User.email == email_n))
+        if user is not None:
+            self._assert_role_compatible(user.id, "community_admin")
+        if user is None:
+            user = User(
+                email=email_n,
+                password_hash=hash_password("Demo@123456"),
+                display_name=display_name.strip() or email_n.split("@")[0],
+                school="华中科技大学",
+                auth_provider="local",
+            )
+            self.session.add(user)
+            self.session.flush()
+        exists = self.session.scalar(
+            select(UserRole).where(
+                UserRole.user_id == user.id,
+                UserRole.role_id == admin_role.id,
+                UserRole.community_id == community.id,
+            )
+        )
+        if exists is None:
+            self.session.add(
+                UserRole(user_id=user.id, role_id=admin_role.id, community_id=community.id)
+            )
+        community.applicant_user_id = user.id
 
     def update_profile(
         self,
@@ -347,11 +393,33 @@ class CommunityService:
         self.session.refresh(community)
         return community
 
+    def _assert_role_compatible(self, user_id: int, new_code: str) -> None:
+        """一个邮箱只能属于一种身份：学生、导师、组织、组委会互不混用。"""
+        labels = {
+            "student": "学生",
+            "mentor": "导师",
+            "community_admin": "组织",
+            "committee": "组委会",
+        }
+        codes = set(
+            self.session.scalars(
+                select(Role.code)
+                .join(UserRole, UserRole.role_id == Role.id)
+                .where(UserRole.user_id == user_id)
+            ).all()
+        )
+        conflict = codes - {new_code}
+        if not conflict:
+            return
+        names = "、".join(labels.get(code, code) for code in sorted(conflict))
+        raise ValueError(f"该邮箱已是{names}账号，不能再用作其他身份，请换一个邮箱")
+
     def join_with_invite(self, auth: AuthUser, body: CommunityJoinRequest) -> CommunityJoinOut:
         community = self.get_by_invite_code(body.invite_code)
         if community is None or community.status != "approved":
             raise LookupError("组织码无效或社区未通过入驻")
         role_code = body.as_role
+        self._assert_role_compatible(auth.id, role_code)
         self._ensure_role(user_id=auth.id, role_code=role_code, community_id=community.id)
         self._ensure_role(user_id=auth.id, role_code=role_code, community_id=None)
         self.session.commit()

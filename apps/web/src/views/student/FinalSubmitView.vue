@@ -5,6 +5,7 @@ import api from '@/api/client'
 import type { ApplicationOut } from '@/api/types'
 import ZipDropZone from '@/components/ZipDropZone.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import AgreementDialog from '@/components/AgreementDialog.vue'
 import PageCrumb from '@/components/PageCrumb.vue'
 import { resolveCrumbs } from '@/utils/crumbTrail'
 
@@ -18,6 +19,13 @@ const codeUrl = ref('')
 const zipUrl = ref('')
 const zipName = ref('')
 const agreed = ref(false)
+const agreeOpen = ref(false)
+const acceptanceTerms = [
+  '一、本协议适用于在本平台提交结项验收。你提交的说明、压缩包、设计文档链接和代码链接，只用于导师、社区和组委会核验这项任务是否完成。',
+  '二、请确认材料是你本人完成，且不包含他人未授权的私密信息、账号密码或与本任务无关的内容。',
+  '三、审核期间，上述材料会被负责该任务的导师和组委会查看。验收未通过后，你可以按退回意见修改并再次提交。',
+  '四、勾选同意并提交，即表示你已阅读本协议，并授权平台按上述范围使用这些材料。未同意本协议，不能提交验收。',
+]
 const busy = ref(false)
 const error = ref('')
 const confirmOpen = ref(false)
@@ -69,11 +77,15 @@ function validateBeforeConfirm(): boolean {
     return false
   }
   if (!agreed.value) {
-    error.value = '请先勾选同意信息收集说明'
+    error.value = '请先阅读并同意《验收材料提交协议》'
     return false
   }
   error.value = ''
   return true
+}
+
+function acceptTerms() {
+  agreed.value = true
 }
 
 function requestSubmit() {
@@ -117,6 +129,12 @@ onMounted(load)
 
 <template>
   <div class="page wide hw-form-page">
+    <AgreementDialog
+      v-model:open="agreeOpen"
+      title="验收材料提交协议"
+      :paragraphs="acceptanceTerms"
+      @agree="acceptTerms"
+    />
     <ConfirmDialog
       v-model:open="confirmOpen"
       title="确认提交验收？"
@@ -188,9 +206,11 @@ onMounted(load)
         </div>
 
         <label class="agree">
-          <input v-model="agreed" type="checkbox" />
+          <input v-model="agreed" type="checkbox" :disabled="acceptancePending || busy" />
           <span>
-            已阅读并同意：提交验收时将收集附件、设计文档链接、代码链接与说明，用于验收审核与运营。
+            我已阅读并同意
+            <button type="button" class="as-link" @click.prevent="agreeOpen = true">《验收材料提交协议》</button>
+            。未同意不能提交验收。
           </span>
         </label>
       </fieldset>
@@ -199,7 +219,7 @@ onMounted(load)
         <button
           class="btn primary"
           type="button"
-          :disabled="busy || acceptancePending"
+          :disabled="busy || acceptancePending || !agreed"
           @click="requestSubmit"
         >
           确认提交验收
@@ -291,15 +311,26 @@ textarea {
 }
 .agree {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: row;
   align-items: flex-start;
-  font-size: 0.82rem;
-  color: #4b5563;
-  margin: 1.35rem 0 1.25rem;
-  line-height: 1.45;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  color: #334155;
+  margin: 1.35rem 0 0.25rem;
+  line-height: 1.55;
 }
 .agree input {
-  margin-top: 0.2rem;
+  margin-top: 0.25rem;
+  flex: 0 0 auto;
+}
+.as-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #1677ff;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
 }
 .actions {
   display: flex;

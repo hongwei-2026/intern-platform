@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="intern-platform", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
+    # 生产环境用 .env 里的随机 SECRET_KEY，不要使用默认占位符
     secret_key: str = Field(default="change-me-in-production", alias="SECRET_KEY")
     access_token_expire_minutes: int = Field(
         default=60 * 24, alias="ACCESS_TOKEN_EXPIRE_MINUTES"
@@ -85,7 +87,7 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_echo(self) -> bool:
-        return self.app_env == "development"
+        return os.getenv("SQL_ECHO", "").lower() in {"1", "true", "yes"}
 
 
 @lru_cache

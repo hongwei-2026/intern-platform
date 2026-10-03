@@ -1,14 +1,42 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 
-const TOKEN_KEY = 'intern_platform_token'
+const PUBLIC_TOKEN_KEY = 'intern_platform_token'
+const OPS_TOKEN_KEY = 'intern_platform_ops_token'
 
-export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+export function isOpsPath(path = window.location.pathname): boolean {
+  return path.startsWith('/ops') || path.startsWith('/committee')
 }
 
-export function setStoredToken(token: string | null) {
-  if (token) localStorage.setItem(TOKEN_KEY, token)
-  else localStorage.removeItem(TOKEN_KEY)
+function keyFor(scope: 'public' | 'ops'): string {
+  return scope === 'ops' ? OPS_TOKEN_KEY : PUBLIC_TOKEN_KEY
+}
+
+/** 每个窗口各记各的登录。localStorage 两个窗口共用，登录会互相顶掉。 */
+function readToken(scope: 'public' | 'ops'): string | null {
+  const key = keyFor(scope)
+  localStorage.removeItem(key)
+  return sessionStorage.getItem(key)
+}
+
+export function getStoredToken(scope?: 'public' | 'ops'): string | null {
+  const useOps = scope ? scope === 'ops' : isOpsPath()
+  return readToken(useOps ? 'ops' : 'public')
+}
+
+export function withFileAuth(url?: string | null): string {
+  if (!url || !url.includes('/uploads/files/')) return url || ''
+  const token = getStoredToken()
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}access_token=${encodeURIComponent(token)}`
+}
+
+export function setStoredToken(token: string | null, scope?: 'public' | 'ops') {
+  const useOps = scope ? scope === 'ops' : isOpsPath()
+  const key = keyFor(useOps ? 'ops' : 'public')
+  localStorage.removeItem(key)
+  if (token) sessionStorage.setItem(key, token)
+  else sessionStorage.removeItem(key)
 }
 
 function uuid(): string {

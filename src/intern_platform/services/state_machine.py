@@ -17,6 +17,7 @@ class ApplicationStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     FINAL_SUBMITTED = "final_submitted"
     MENTOR_FINAL_REVIEW = "mentor_final_review"
+    COMMUNITY_FINAL_REVIEW = "community_final_review"
     COMMITTEE_FINAL_REVIEW = "committee_final_review"
     COMPLETED = "completed"
     FINAL_REJECTED = "final_rejected"
@@ -33,6 +34,7 @@ class TransitionAction(str, Enum):
     SUBMIT_FINAL = "submit_final"
     START_MENTOR_FINAL = "start_mentor_final"
     APPROVE_MENTOR_FINAL = "approve_mentor_final"
+    SUBMIT_COMMUNITY_FINAL = "submit_community_final"
     APPROVE_COMMITTEE_FINAL = "approve_committee_final"
     REJECT_FINAL = "reject_final"
     # 开发期：学生放弃 / 导师取消接取
@@ -58,7 +60,8 @@ TRANSITION_MAP: dict[tuple[ApplicationStatus, TransitionAction], ApplicationStat
     # 验收未通过后可再次提交验收（审核中不可再交，由业务层拦截）
     (ApplicationStatus.FINAL_REJECTED, TransitionAction.SUBMIT_FINAL): ApplicationStatus.FINAL_SUBMITTED,
     (ApplicationStatus.FINAL_SUBMITTED, TransitionAction.START_MENTOR_FINAL): ApplicationStatus.MENTOR_FINAL_REVIEW,
-    (ApplicationStatus.MENTOR_FINAL_REVIEW, TransitionAction.APPROVE_MENTOR_FINAL): ApplicationStatus.COMMITTEE_FINAL_REVIEW,
+    (ApplicationStatus.MENTOR_FINAL_REVIEW, TransitionAction.APPROVE_MENTOR_FINAL): ApplicationStatus.COMMUNITY_FINAL_REVIEW,
+    (ApplicationStatus.COMMUNITY_FINAL_REVIEW, TransitionAction.SUBMIT_COMMUNITY_FINAL): ApplicationStatus.COMMITTEE_FINAL_REVIEW,
     (ApplicationStatus.MENTOR_FINAL_REVIEW, TransitionAction.REJECT_FINAL): ApplicationStatus.FINAL_REJECTED,
     (ApplicationStatus.COMMITTEE_FINAL_REVIEW, TransitionAction.APPROVE_COMMITTEE_FINAL): ApplicationStatus.COMPLETED,
     (ApplicationStatus.COMMITTEE_FINAL_REVIEW, TransitionAction.REJECT_FINAL): ApplicationStatus.FINAL_REJECTED,
@@ -88,6 +91,7 @@ STATUS_NODE: dict[ApplicationStatus, str] = {
     ApplicationStatus.IN_PROGRESS: "none",
     ApplicationStatus.FINAL_SUBMITTED: "mentor",
     ApplicationStatus.MENTOR_FINAL_REVIEW: "mentor",
+    ApplicationStatus.COMMUNITY_FINAL_REVIEW: "community",
     ApplicationStatus.COMMITTEE_FINAL_REVIEW: "committee",
     ApplicationStatus.COMPLETED: "none",
     ApplicationStatus.FINAL_REJECTED: "none",

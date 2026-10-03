@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import api from '@/api/client'
 
-const auth = useAuthStore()
 const index = ref(0)
 let timer: number | undefined
 
-const slides = [
+const defaultSlides = [
   {
     id: 'intern',
     titleHtml: '华科开源原子<br />开源实习管理系统',
@@ -44,7 +43,7 @@ const slides = [
 ]
 
 function go(i: number) {
-  const n = slides.length
+  const n = slides.value.length
   index.value = ((i % n) + n) % n
 }
 
@@ -68,9 +67,80 @@ function stop() {
   }
 }
 
-onMounted(start)
+type RemoteSlide = {
+  id: string
+  title?: string
+  lead?: string
+  meta?: string
+  image?: string
+  live?: boolean
+  jump?: 'page' | 'link'
+  link?: string
+  pageTitle?: string
+  pageBody?: string
+  buttonLabel?: string
+  primaryTo?: string
+  primaryLabel?: string
+  secondaryTo?: string
+  secondaryLabel?: string
+}
+
+function fromRemote(item: RemoteSlide) {
+  const jump = item.jump || (item.pageTitle || item.pageBody ? 'page' : 'link')
+  const href = jump === 'page' ? `/banner/${item.id}` : item.link || item.primaryTo || '/projects'
+  const secondaryTo = item.secondaryTo || ''
+  return {
+    id: item.id,
+    titleHtml: (item.title || '').replace(/\n/g, '<br />'),
+    lead: item.lead || '',
+    meta: item.meta || '',
+    image: item.image || defaultSlides[0].image,
+    href,
+    external: href.startsWith('http'),
+    buttonLabel: item.buttonLabel || item.primaryLabel || (jump === 'page' ? '了解这次活动' : '前往'),
+    primary: {
+      to: href,
+      label: item.buttonLabel || item.primaryLabel || (jump === 'page' ? '了解这次活动' : '前往'),
+    },
+    secondary: secondaryTo
+      ? { to: secondaryTo, label: item.secondaryLabel || '了解更多', external: secondaryTo.startsWith('http') }
+      : null,
+  }
+}
+
+const slides = ref(
+  defaultSlides.map((item) => ({
+    ...item,
+    href: item.primary.to,
+    external: false,
+    buttonLabel: item.primary.label,
+    primary: item.primary,
+    secondary: { ...item.secondary, external: false },
+  })),
+)
+
+onMounted(async () => {
+  start()
+  try {
+    const { data } = await api.get<RemoteSlide[]>('/site/slides')
+    if (data.length) slides.value = data.map(fromRemote)
+  } catch {
+    /* 未配置时沿用现有首页 */
+  }
+})
 onUnmounted(stop)
 </script>
+
+<style scoped>
+.hero-hit {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+  text-decoration: none;
+}
+</style>
 
 <template>
   <section class="hero-carousel" @mouseenter="stop" @mouseleave="start">
@@ -79,22 +149,17 @@ onUnmounted(stop)
       :key="s.id"
       class="hero-slide"
       :class="{ active: i === index }"
-      :style="{ backgroundImage: `linear-gradient(105deg, rgba(8,12,20,.88) 0%, rgba(15,23,42,.5) 55%, rgba(15,23,42,.28) 100%), url(${s.image})` }"
+      :style="{ backgroundImage: `linear-gradient(105deg, rgba(8,12,20,.72) 0%, rgba(15,23,42,.35) 55%, rgba(15,23,42,.2) 100%), url(${s.image})` }"
     >
       <div class="hero-inner">
-        <h1 v-html="s.titleHtml" />
-        <p class="hero-lead">{{ s.lead }}</p>
-        <div class="hero-meta">{{ s.meta }}</div>
+        <h1 v-if="s.titleHtml" v-html="s.titleHtml" />
+        <p v-if="s.lead" class="hero-lead">{{ s.lead }}</p>
+        <div v-if="s.meta" class="hero-meta">{{ s.meta }}</div>
         <div class="hero-cta">
-          <RouterLink class="btn ghost" :to="s.primary.to">{{ s.primary.label }}</RouterLink>
-          <RouterLink class="btn ghost" :to="s.secondary.to">{{ s.secondary.label }}</RouterLink>
-          <RouterLink
-            v-if="auth.isLoggedIn && i === index"
-            class="btn student"
-            to="/me"
-          >
-            进入工作台
-          </RouterLink>
+          <a v-if="s.external" class="btn ghost" :href="s.primary.to" target="_blank" rel="noopener">{{ s.primary.label }}</a>
+          <RouterLink v-else class="btn ghost" :to="s.primary.to">{{ s.primary.label }}</RouterLink>
+          <a v-if="s.secondary?.external" class="btn ghost" :href="s.secondary.to" target="_blank" rel="noopener">{{ s.secondary.label }}</a>
+          <RouterLink v-else-if="s.secondary" class="btn ghost" :to="s.secondary.to">{{ s.secondary.label }}</RouterLink>
         </div>
       </div>
     </div>

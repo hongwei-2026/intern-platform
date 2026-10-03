@@ -4,10 +4,11 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import api from '@/api/client'
 import type { ApplicationOut, CommunityOut, ProjectOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
-import { nodeLabel, statusLabel, statusTone } from '@/utils/statusLabel'
+import { stageLabel, statusLabel, statusTone } from '@/utils/statusLabel'
 import { difficultyLabel } from '@/utils/projectBrief'
 import { clearTrail, seedTrail } from '@/utils/crumbTrail'
 import { CS_DIRECTIONS, childrenOf, placeDirection } from '@/utils/csDirections'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
 type Mode = 'orgs' | 'tasks' | 'mine'
 
@@ -183,15 +184,6 @@ const myActiveApps = computed(() => {
     .sort((a, b) => b.id - a.id)
 })
 
-function phaseHint(status: string) {
-  if (['draft', 'submitted', 'mentor_review', 'rejected'].includes(status)) return '申请审核中'
-  if (['community_review', 'committee_review'].includes(status)) return '名额已预留'
-  if (['selected', 'in_progress', 'final_rejected'].includes(status)) return '任务开发中'
-  if (['final_submitted', 'mentor_final_review', 'committee_final_review'].includes(status))
-    return '结项验收中'
-  return ''
-}
-
 async function loadMine() {
   if (!auth.isLoggedIn) {
     myApps.value = []
@@ -201,7 +193,9 @@ async function loadMine() {
   if (!auth.canApplyProjects) {
     myApps.value = []
     mineLoaded.value = true
-    mineError.value = '组织侧账号请到工作台查看负责项目'
+    mineError.value = auth.hasRole('committee')
+      ? '组委会不领取任务。社区和项目请看「社区列表」和「全部任务」，停用组织可以在卡片上操作。'
+      : '组织侧账号请到工作台查看负责项目'
     return
   }
   mineLoading.value = true
@@ -224,7 +218,7 @@ function goLogin() {
 onMounted(async () => {
   clearTrail()
   const tab = String(route.query.tab || '')
-  if (tab === 'tasks' || tab === 'orgs' || tab === 'mine') mode.value = tab
+  if (tab === 'tasks' || tab === 'orgs' || (tab === 'mine' && !auth.hasRole('committee'))) mode.value = tab
   try {
     const [cRes, pRes] = await Promise.all([
       api.get<CommunityOut[]>('/communities', { params: { status: 'approved' } }),
@@ -239,6 +233,69 @@ onMounted(async () => {
   }
   if (mode.value === 'mine') await loadMine()
 })
+
+const retireOpen = ref(false)
+const retireKind = ref<'org' | 'project'>('org')
+const retireOrgTarget = ref<CommunityOut | null>(null)
+const retireProjectTarget = ref<ProjectOut | null>(null)
+
+const retireTitle = computed(() => (retireKind.value === 'org' ? '停止报名' : '下架任务'))
+const retireMessage = computed(() => {
+  if (retireKind.value === 'org' && retireOrgTarget.value) {
+    return `停用或删除「${retireOrgTarget.value.name}」。有进行中的学生时只停止报名。请输入组织全名确认。`
+  }
+  if (retireKind.value === 'project' && retireProjectTarget.value) {
+    return `下架后学生不能再报名，已有记录保留。请输入任务全名「${retireProjectTarget.value.title}」确认。`
+  }
+  return ''
+})
+const retireExpect = computed(() =>
+  retireKind.value === 'org' ? retireOrgTarget.value?.name || '' : retireProjectTarget.value?.title || '',
+)
+const retireConfirmText = computed(() => (retireKind.value === 'org' ? '确认' : '下架'))
+
+function retireOrg(c: CommunityOut) {
+  retireKind.value = 'org'
+  retireOrgTarget.value = c
+  retireProjectTarget.value = null
+  retireOpen.value = true
+}
+
+function retireProject(p: ProjectOut) {
+  retireKind.value = 'project'
+  retireProjectTarget.value = p
+  retireOrgTarget.value = null
+  retireOpen.value = true
+}
+
+function clearRetire() {
+  retireOrgTarget.value = null
+  retireProjectTarget.value = null
+}
+
+async function confirmRetire() {
+  if (retireKind.value === 'org') {
+    const c = retireOrgTarget.value
+    clearRetire()
+    if (!c) return
+    try {
+      await api.post(`/committee/communities/${c.id}/retire`)
+      communities.value = communities.value.filter((item) => item.id !== c.id)
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : '处理失败'
+    }
+    return
+  }
+  const p = retireProjectTarget.value
+  clearRetire()
+  if (!p) return
+  try {
+    await api.post(`/projects/${p.id}/close`)
+    projects.value = projects.value.filter((item) => item.id !== p.id)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '下架失败'
+  }
+}
 
 function seedFromBrowse(community?: CommunityOut | null) {
   if (community) {
@@ -271,7 +328,7 @@ watch([mineQuery], () => {
 watch(
   () => route.query.tab,
   (tab) => {
-    if (tab === 'tasks' || tab === 'orgs' || tab === 'mine') {
+    if (tab === 'tasks' || tab === 'orgs' || (tab === 'mine' && !auth.hasRole('committee'))) {
       mode.value = tab
       if (tab === 'mine') void loadMine()
     }
@@ -281,6 +338,18 @@ watch(
 
 <template>
   <div class="browse-page">
+    <ConfirmDialog
+      :open="retireOpen"
+      :title="retireTitle"
+      :message="retireMessage"
+      :expect-text="retireExpect"
+      :confirm-text="retireConfirmText"
+      cancel-text="取消"
+      danger
+      @update:open="retireOpen = $event"
+      @cancel="clearRetire"
+      @confirm="confirmRetire"
+    />
     <header class="browse-hero">
       <h1>查看项目</h1>
       <p>先选社区了解方向，再领取该社区任务。</p>
@@ -308,6 +377,7 @@ watch(
         全部任务
       </button>
       <button
+        v-if="!auth.hasRole('committee')"
         type="button"
         role="tab"
         class="browse-tab"
@@ -359,6 +429,14 @@ watch(
               <span class="org-tag">{{ placeDirection(c.slug).parent }}</span>
               <span class="org-tag">{{ placeDirection(c.slug).child }}</span>
             </div>
+            <button
+              v-if="auth.hasRole('committee')"
+              class="manage-link"
+              type="button"
+              @click.prevent.stop="retireOrg(c)"
+            >
+              管理
+            </button>
           </div>
         </RouterLink>
       </div>
@@ -485,6 +563,14 @@ watch(
                   @click="seedFromBrowse(communityOf(p.community_id))"
                   >查看</RouterLink
                 >
+                <button
+                  v-if="auth.hasRole('committee')"
+                  class="manage-link"
+                  type="button"
+                  @click="retireProject(p)"
+                >
+                  下架
+                </button>
               </td>
             </tr>
           </tbody>
@@ -531,9 +617,8 @@ watch(
             </h3>
             <p class="mine-meta">
               申请 #{{ a.id }}
-              <template v-if="phaseHint(a.status)"> · {{ phaseHint(a.status) }}</template>
-              <template v-if="nodeLabel(a.current_node)">
-                · {{ nodeLabel(a.current_node) }}
+              <template v-if="stageLabel(a.status, a.current_node)">
+                · {{ stageLabel(a.status, a.current_node) }}
               </template>
             </p>
           </div>
@@ -566,6 +651,18 @@ watch(
 </template>
 
 <style scoped>
+.manage-link {
+  margin-top: 0.65rem;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #8c8c8c;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.manage-link:hover { color: #1677ff; }
+td .manage-link { margin-top: 0; margin-left: 0.65rem; }
 .mine-empty {
   text-align: center;
   padding: 2rem 1.25rem;

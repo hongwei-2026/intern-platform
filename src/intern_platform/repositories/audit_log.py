@@ -14,8 +14,7 @@ from intern_platform.repositories.base import AppendOnlyRepository
 from intern_platform.services.ledger import (
     build_audit_hash_payload,
     compute_event_hash,
-    get_prev_hash_audit,
-    next_seq_audit,
+    next_audit_link,
 )
 
 
@@ -43,8 +42,7 @@ class AuditLogRepository(AppendOnlyRepository[AuditLog]):
         user_agent: str | None = None,
     ) -> AuditLog:
         created_at = utcnow()
-        seq_no = next_seq_audit(self.session)
-        prev_hash = get_prev_hash_audit(self.session)
+        seq_no, prev_hash = next_audit_link(self.session)
         before_json = (
             json.dumps(before, ensure_ascii=False) if before is not None else None
         )

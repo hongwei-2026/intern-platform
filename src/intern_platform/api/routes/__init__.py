@@ -7,10 +7,12 @@ from intern_platform.api.routes import (
     applications,
     auth,
     communities,
+    committee_ops,
     finals,
     health,
     inbox,
     integrations,
+    liaison,
     messages,
     notifications,
     oauth,
@@ -34,3 +36,6 @@ api_router.include_router(messages.router)
 api_router.include_router(notifications.router)
 api_router.include_router(uploads.router)
 api_router.include_router(integrations.router)
+api_router.include_router(liaison.router)
+api_router.include_router(committee_ops.router)
+api_router.include_router(committee_ops.public_router)

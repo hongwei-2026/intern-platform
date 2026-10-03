@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import api from '@/api/client'
 
 type DocKey = 'faq' | 'org' | 'student' | 'mentor' | 'flow'
 
 const route = useRoute()
 const router = useRouter()
+const useRemote = ref(false)
+const remoteBooks = ref<{ key: string; title: string; chapters: { id: string; title: string; body: string; hidden?: boolean; blocks?: { id?: string; type?: string; text?: string; url?: string; rows?: string[][] }[] }[] }[]>([])
+const remoteBook = ref('')
+const remoteChapter = ref('')
 
 const activeDoc = ref<DocKey | null>(null)
 const activeId = ref('')
@@ -116,6 +121,21 @@ function nudgeHistory(dir: 1 | -1) {
   }, 2500)
 }
 
+function cardLook(key: string) {
+  return helpDocs.find((item) => item.key === key) || {
+    key: 'faq' as DocKey,
+    title: '',
+    desc: '查看说明',
+    icon: '📘',
+    tone: '',
+  }
+}
+
+function scrollChapter(id: string) {
+  remoteChapter.value = id
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function openDoc(key: DocKey) {
   activeDoc.value = key
   activeId.value = docMeta[key].toc[0]?.id || ''
@@ -188,6 +208,24 @@ const hashToDoc: Record<string, DocKey> = {
 
 onMounted(async () => {
   window.addEventListener('scroll', onScroll, { passive: true })
+  try {
+    const { data } = await api.get<{ books: typeof remoteBooks.value }>('/site/guide')
+    const books = (data.books || []).filter((book) =>
+      book.chapters?.some((chapter) => {
+        if (chapter.hidden) return false
+        const text = `${chapter.body || ''}${(chapter.blocks || []).map((block) => block.text || '').join('')}`
+        const media = (chapter.blocks || []).some((block) => block.type === 'image' || block.type === 'video')
+        return media || text.trim().length > 80
+      }),
+    )
+    if (books.length) {
+      remoteBooks.value = books
+      remoteBook.value = ''
+      useRemote.value = true
+    }
+  } catch {
+    /* 未发布时用现有指南 */
+  }
   await nextTick()
   const hash = route.hash.replace('#', '')
   const mapped = hashToDoc[hash]
@@ -217,7 +255,74 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section class="guide-help-section">
+    <section v-if="useRemote" class="guide-help-section">
+      <h2>帮助文档</h2>
+      <p class="help-hint">请先选择下方卡片，再查看对应详细说明</p>
+      <div class="help-grid-wrap">
+        <button class="h-scroll-btn help-nav-btn" type="button" aria-label="向左" @click="scrollRail(helpTrack, -1)">‹</button>
+        <div ref="helpTrack" class="help-rail">
+          <button
+            v-for="book in remoteBooks"
+            :key="book.key"
+            type="button"
+            class="help-card"
+            :class="[cardLook(book.key).tone, { selected: remoteBook === book.key }]"
+            @click="remoteBook = book.key"
+          >
+            <span class="help-icon">{{ cardLook(book.key).icon }}</span>
+            <strong>{{ book.title }}</strong>
+            <span>{{ cardLook(book.key).desc }}</span>
+            <em class="help-cta">点击查看详情 →</em>
+          </button>
+        </div>
+        <button class="h-scroll-btn help-nav-btn" type="button" aria-label="向右" @click="scrollRail(helpTrack, 1)">›</button>
+      </div>
+    </section>
+
+    <div v-if="useRemote && remoteBook" class="guide-detail-wrap">
+      <div class="guide-detail-bar">
+        <h2>{{ remoteBooks.find((book) => book.key === remoteBook)?.title }}</h2>
+      </div>
+      <div class="guide-layout">
+        <article class="guide-main">
+          <section
+            v-for="chapter in remoteBooks.find((book) => book.key === remoteBook)?.chapters.filter((chapter) => !chapter.hidden)"
+            :id="chapter.id"
+            :key="chapter.id"
+            class="guide-sec"
+          >
+            <h3>{{ chapter.title }}</h3>
+            <template v-for="block in chapter.blocks || []" :key="block.id">
+              <p v-if="!block.type || block.type === 'text'">{{ block.text }}</p>
+              <img v-else-if="block.type === 'image' && block.url" :src="block.url" alt="" />
+              <table v-else-if="block.type === 'table'">
+                <tr v-for="(row, ri) in block.rows" :key="ri"><td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td></tr>
+              </table>
+              <video v-else-if="block.url" :src="block.url" controls />
+            </template>
+            <p v-if="!(chapter.blocks || []).length">{{ chapter.body }}</p>
+          </section>
+        </article>
+        <aside class="guide-toc" aria-label="目录">
+          <div class="guide-toc-card">
+            <div class="guide-toc-title">目录</div>
+            <nav class="guide-toc-list">
+              <button
+                v-for="chapter in remoteBooks.find((book) => book.key === remoteBook)?.chapters.filter((chapter) => !chapter.hidden)"
+                :key="chapter.id"
+                type="button"
+                class="guide-toc-item"
+                @click="scrollChapter(chapter.id)"
+              >
+                {{ chapter.title }}
+              </button>
+            </nav>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <section v-if="!useRemote" class="guide-help-section">
       <h2>帮助文档</h2>
       <p class="help-hint">请先选择下方卡片，再查看对应详细说明</p>
       <div class="help-grid-wrap">
@@ -242,7 +347,7 @@ onUnmounted(() => {
     </section>
 
     <!-- 仅点击卡片后展开详情 -->
-    <div v-if="activeDoc" ref="detailRef" class="guide-detail-wrap">
+    <div v-if="activeDoc && !useRemote" ref="detailRef" class="guide-detail-wrap">
       <div class="guide-detail-bar">
         <h2>{{ currentTitle }}</h2>
         <button class="btn secondary sm" type="button" @click="closeDoc">返回帮助文档</button>
@@ -378,7 +483,7 @@ onUnmounted(() => {
                 <span class="ico">🔑</span>
                 <div class="body">
                   <strong>演示账号</strong>
-                  <p>可用 *@demo.hust.edu.cn / Demo@123456 体验不同角色工作台（以种子数据为准）。</p>
+                  <p>学生自行注册。导师使用社区邀请码注册，组织账号和组委会账号由组委会开通。</p>
                 </div>
               </div>
             </section>
@@ -788,3 +893,10 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.guide-remote table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.guide-remote td { border: 1px solid #d0d7e2; padding: 6px 8px; }
+.guide-sec img, .guide-sec video { display: block; max-width: min(100%, 720px); max-height: 360px; object-fit: contain; border-radius: 12px; margin: 12px 0; }
+.guide-remote img, .guide-remote video { display: block; width: min(100%, 720px); border-radius: 12px; margin: 12px 0; }
+</style>

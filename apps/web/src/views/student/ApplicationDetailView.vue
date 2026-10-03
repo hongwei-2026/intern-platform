@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink, useRouter } from 'vue-router'
-import api from '@/api/client'
-import type { ApplicationOut, MessageOut, ReviewRecordOut, TaskDynamicsRow } from '@/api/types'
+import api, { withFileAuth } from '@/api/client'
+import type { ApplicationOut, MessageOut, ProjectOut, ReviewRecordOut, TaskDynamicsRow } from '@/api/types'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import PdfPreviewModal from '@/components/PdfPreviewModal.vue'
 import PageCrumb from '@/components/PageCrumb.vue'
 import EllipsisTip from '@/components/EllipsisTip.vue'
@@ -25,12 +26,14 @@ type DynSortKey =
 const route = useRoute()
 const router = useRouter()
 const app = ref<ApplicationOut | null>(null)
+const projectBrief = ref<ProjectOut | null>(null)
 const logs = ref<MessageOut[]>([])
 const taskDynamics = ref<TaskDynamicsRow[]>([])
 const error = ref('')
 const actionMsg = ref('')
 const actionErr = ref('')
 const busy = ref(false)
+const withdrawOpen = ref(false)
 const sideTab = ref<SideTab>('task')
 const dynSort = ref<{ key: DynSortKey; dir: 'asc' | 'desc' }>({
   key: 'registered_at',
@@ -56,9 +59,23 @@ const crumbs = computed(() => {
 })
 
 const canSubmit = computed(() => app.value?.status === 'draft')
-const canReapply = computed(
-  () => !!app.value && ['rejected', 'final_rejected', 'withdrawn'].includes(app.value.status),
+const canApplyReward = computed(() =>
+  ['community_final_review', 'committee_final_review', 'completed'].includes(app.value?.status || ''),
 )
+const latestReward = computed(() => [...logs.value].reverse().find((item) => item.kind === 'reward'))
+const rewardState = computed(() => latestReward.value?.reward_status || (latestReward.value ? 'pending' : ''))
+const rewardClosed = computed(() => rewardState.value === 'pending' || rewardState.value === 'approved')
+const seatsFull = computed(() => {
+  const project = projectBrief.value
+  if (!project) return false
+  if (project.seats_available != null) return project.seats_available <= 0
+  return (project.seats_taken || 0) >= (project.quota || 0)
+})
+const otherOpenTask = ref<ApplicationOut | null>(null)
+const reapplyStatus = computed(
+  () => !!app.value && ['rejected', 'withdrawn'].includes(app.value.status) && !otherOpenTask.value,
+)
+const canReapply = computed(() => reapplyStatus.value && !seatsFull.value)
 
 /** 验收审核中：不可再交验收（可继续更新进展） */
 const acceptancePending = computed(() =>
@@ -105,7 +122,7 @@ const canWithdraw = computed(() =>
 const phase = computed(() => {
   const s = app.value?.status || ''
   if (['draft', 'submitted', 'mentor_review', 'rejected', 'withdrawn'].includes(s)) return 1
-  if (s === 'completed') return 3
+  if (['completed', 'community_final_review', 'committee_final_review'].includes(s)) return 3
   if (inTaskDev.value) return 2
   return 1
 })
@@ -123,6 +140,7 @@ const reviewPipe = computed(() => {
       'in_progress',
       'final_submitted',
       'mentor_final_review',
+      'community_final_review',
       'committee_final_review',
       'completed',
       'final_rejected',
@@ -168,7 +186,18 @@ const personalDynamics = computed<DynRow[]>(() => {
 
   for (const m of logs.value) {
     const kind = m.kind || 'note'
-    if (kind === 'feedback' || kind === 'note') {
+    if (kind === 'official') {
+      rows.push({
+        key: `off-${m.id}`,
+        at: m.created_at,
+        type: kind === 'official' ? `${m.community_name || '社区'}通知` : kind === 'feedback' || kind === 'note' ? '' : kind,
+        body: m.body || '—',
+        statusText: '正式通知',
+        statusTone: 'step',
+      })
+    } else if (kind === 'reward') {
+      /* 奖励申请在单独页面查看 */
+    } else if (kind === 'feedback' || kind === 'note') {
       const body = String(m.body || '').trim()
       if (body) feedbackPool.push({ id: m.id, at: m.created_at, body })
     } else if (kind === 'progress' || kind === 'midterm') {
@@ -194,16 +223,67 @@ const personalDynamics = computed<DynRow[]>(() => {
   const sortedAcc = [...acceptanceMsgs].sort((a, b) =>
     String(b.created_at || '').localeCompare(String(a.created_at || '')),
   )
+  const finalReviews: ReviewRecordOut[] = []
+  const otherReviews: ReviewRecordOut[] = []
+  const SKIP = new Set([
+    'start_mentor_review',
+    'start_mentor_final',
+    'start_progress',
+    'submit_final',
+  ])
+  for (const r of (app.value?.review_records || []) as ReviewRecordOut[]) {
+    const action = (r.action || '').toLowerCase()
+    if (SKIP.has(action)) continue
+    const to = (r.to_status || '').toLowerCase()
+    const from = (r.from_status || '').toLowerCase()
+    const aboutFinal =
+      action.includes('final') ||
+      to.includes('final') ||
+      from.includes('final') ||
+      to === 'completed'
+    if (aboutFinal && sortedAcc.length) finalReviews.push(r)
+    else otherReviews.push(r)
+  }
+
   sortedAcc.forEach((m, idx) => {
-    const attachName =
-      m.attachment_name ||
-      (m.attachment_url ? m.attachment_url.split('/').pop() || '交付件.zip' : '')
-    let statusText = '已提交'
-    let tone = 'ok'
-    if (idx === 0 && acceptancePending.value) {
+    const newer = idx > 0 ? sortedAcc[idx - 1] : null
+    const start = String(m.created_at || '')
+    const end = newer ? String(newer.created_at || '') : '￿'
+    const related = finalReviews.filter((r) => {
+      const at = String(r.created_at || '')
+      return at >= start && at < end
+    })
+    const rejected = related.find((r) => {
+      const action = (r.action || '').toLowerCase()
+      const to = (r.to_status || '').toLowerCase()
+      return action.includes('reject') || to.includes('reject')
+    })
+    const passed = related.find((r) => {
+      const action = (r.action || '').toLowerCase()
+      const to = (r.to_status || '').toLowerCase()
+      return action.includes('approve') && (to.includes('final') || to === 'completed' || action.includes('committee'))
+    })
+    let statusText = '验收中'
+    let tone = 'pending'
+    let teacherNote: string | undefined
+    if (rejected) {
+      statusText = '验收失败'
+      tone = 'fail'
+      teacherNote = String(rejected.comment || '').trim() || undefined
+    } else if (passed || (idx === 0 && ['community_final_review', 'committee_final_review', 'completed'].includes(app.value?.status || ''))) {
+      statusText = '验收通过'
+      tone = 'ok'
+      teacherNote = String(passed?.comment || '').trim() || undefined
+    } else if (idx === 0 && app.value?.status === 'final_rejected') {
+      statusText = '验收失败'
+      tone = 'fail'
+    } else if (idx === 0 && acceptancePending.value) {
       statusText = '验收中'
       tone = 'pending'
     }
+    const attachName =
+      m.attachment_name ||
+      (m.attachment_url ? m.attachment_url.split('/').pop() || '交付件.zip' : '')
     rows.push({
       key: `acc-${m.id}`,
       at: m.created_at,
@@ -214,19 +294,13 @@ const personalDynamics = computed<DynRow[]>(() => {
         : undefined,
       statusText,
       statusTone: tone,
+      teacherNote,
     })
   })
 
-  const SKIP = new Set([
-    'start_mentor_review',
-    'start_mentor_final',
-    'start_progress',
-    'submit_final',
-  ])
   const reviewRows: DynRow[] = []
-  for (const r of (app.value?.review_records || []) as ReviewRecordOut[]) {
+  for (const r of otherReviews) {
     const action = (r.action || '').toLowerCase()
-    if (SKIP.has(action)) continue
     const to = (r.to_status || '').toLowerCase()
     const comment = String(r.comment || '').trim()
     const isSystem =
@@ -264,44 +338,24 @@ const personalDynamics = computed<DynRow[]>(() => {
     })
   }
 
-  const used = new Set<number>()
-  const targets = reviewRows
-    .filter((r) => r.statusTone === 'fail' || r.statusTone === 'ok')
-    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
-  for (const fb of [...feedbackPool].sort((a, b) =>
-    String(b.at || '').localeCompare(String(a.at || '')),
-  )) {
-    const target = targets.find((r) => !r.teacherNote)
-    if (target) {
-      target.teacherNote = fb.body
-      used.add(fb.id)
-    }
-  }
-
-  const failNotes = reviewRows.filter((r) => r.statusTone === 'fail' && r.teacherNote)
-  if (failNotes.length && sortedAcc.length && !acceptancePending.value) {
-    const latestAcc = rows.find((r) => r.key === `acc-${sortedAcc[0].id}`)
-    const note = failNotes.sort((a, b) =>
-      String(b.at || '').localeCompare(String(a.at || '')),
-    )[0]
-    if (latestAcc && note?.teacherNote) {
-      latestAcc.statusText = '未通过'
-      latestAcc.statusTone = 'fail'
-      latestAcc.teacherNote = note.teacherNote
-    }
-  }
+  const noted = new Set(
+    rows
+      .map((row) => (row.teacherNote || '').trim())
+      .concat(reviewRows.map((row) => (row.teacherNote || '').trim()))
+      .filter(Boolean),
+  )
 
   rows.push(...reviewRows)
   for (const fb of feedbackPool) {
-    if (used.has(fb.id)) continue
+    const text = (fb.body || '').trim()
+    if (!text || noted.has(text)) continue
     rows.push({
       key: `msg-${fb.id}`,
       at: fb.at,
-      type: '导师反馈',
-      body: '—',
-      statusText: '意见',
-      statusTone: 'fail',
-      teacherNote: fb.body,
+      type: '导师建议',
+      body: text,
+      statusText: '建议',
+      statusTone: 'note',
     })
   }
   return rows.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
@@ -437,6 +491,36 @@ async function load() {
   actionErr.value = ''
   try {
     const { data } = await api.get<ApplicationOut>(`/applications/${appId.value}`)
+    let brief: ProjectOut | null = null
+    if (['rejected', 'withdrawn'].includes(data.status)) {
+      try {
+        const { data: project } = await api.get<ProjectOut>(`/projects/${data.project_id}`)
+        brief = project
+      } catch {
+        brief = null
+      }
+      try {
+        const { data: allMine } = await api.get<ApplicationOut[]>('/applications/mine')
+        const open = [
+          'submitted',
+          'mentor_review',
+          'community_review',
+          'committee_review',
+          'selected',
+          'in_progress',
+          'final_submitted',
+          'mentor_final_review',
+          'final_rejected',
+        ]
+        otherOpenTask.value =
+          allMine.find((item) => item.id !== data.id && open.includes(item.status)) || null
+      } catch {
+        otherOpenTask.value = null
+      }
+    } else {
+      otherOpenTask.value = null
+    }
+    projectBrief.value = brief
     app.value = data
     await loadLogs()
     if (sideTab.value === 'feed') await loadDynamics()
@@ -460,7 +544,6 @@ async function submitApp() {
 }
 
 async function withdrawApp() {
-  if (!window.confirm('确定放弃接取该任务？放弃后名额将释放。')) return
   busy.value = true
   actionErr.value = ''
   try {
@@ -482,6 +565,15 @@ onMounted(load)
 <template>
   <div class="page wide ascend-page">
     <PdfPreviewModal v-model:open="previewOpen" :url="previewUrl" :title="previewTitle" />
+    <ConfirmDialog
+      v-model:open="withdrawOpen"
+      title="放弃任务"
+      message="确定放弃接取该任务？放弃后名额将释放，不能再继续这项任务。"
+      confirm-text="确认放弃"
+      cancel-text="再想想"
+      danger
+      @confirm="withdrawApp"
+    />
     <p v-if="error" class="error">{{ error }}</p>
 
     <template v-else-if="app">
@@ -632,12 +724,32 @@ onMounted(load)
                   <h2 v-else-if="phase === 2">2. 任务开发</h2>
                   <h2 v-else>3. 结项验收</h2>
                   <p class="muted">
-                    <template v-if="phase === 1">请完善材料并提交审核</template>
+                    <template v-if="phase === 1 && app?.status === 'rejected' && otherOpenTask">正在进行其他任务，结束前不能再次申请</template>
+                    <template v-else-if="phase === 1 && app?.status === 'rejected' && seatsFull">导师已退回。名额已满，不能再次申请</template>
+                    <template v-else-if="phase === 1 && app?.status === 'rejected'">导师已退回。名额还有空位，可以再次申请</template>
+                    <template v-else-if="phase === 1 && app?.status === 'withdrawn' && seatsFull">已放弃。名额已满，不能再次申请</template>
+                    <template v-else-if="phase === 1 && app?.status === 'withdrawn'">已放弃。名额还有空位，可以再次申请</template>
+                    <template v-else-if="phase === 1">请完善材料并提交审核</template>
                     <template v-else>请根据任务书和任务指南开展任务</template>
                   </p>
                 </div>
                 <div class="dev-actions">
-                  <template v-if="phase >= 2 || inTaskDev">
+                  <button
+                    v-if="canApplyReward && rewardClosed"
+                    class="btn primary"
+                    type="button"
+                    disabled
+                  >
+                    {{ rewardState === 'approved' ? '奖励已通过' : '奖励审核中' }}
+                  </button>
+                  <RouterLink
+                    v-else-if="canApplyReward"
+                    class="btn primary"
+                    :to="`/student/applications/${app.id}/reward`"
+                  >
+                    {{ rewardState === 'rejected' ? '重新申请奖励' : '申请奖励' }}
+                  </RouterLink>
+                  <template v-else-if="phase >= 2 || inTaskDev">
                     <RouterLink
                       class="btn"
                       :class="canGoFinal ? 'primary' : 'disabled'"
@@ -658,7 +770,7 @@ onMounted(load)
                       class="btn outline"
                       type="button"
                       :disabled="busy"
-                      @click="withdrawApp"
+                      @click="withdrawOpen = true"
                     >
                       放弃任务
                     </button>
@@ -679,6 +791,12 @@ onMounted(load)
                   >
                     再次申请
                   </RouterLink>
+                  <button v-else-if="reapplyStatus && seatsFull" class="btn outline" type="button" disabled>
+                    人选已满
+                  </button>
+                  <button v-else-if="app.status && ['rejected', 'withdrawn'].includes(app.status) && otherOpenTask" class="btn outline" type="button" disabled>
+                    手头任务未结束
+                  </button>
                 </div>
               </div>
 
@@ -740,7 +858,7 @@ onMounted(load)
                       <td class="attach">
                         <a
                           v-if="attachMeta(row.attach)"
-                          :href="attachMeta(row.attach)!.url"
+                          :href="withFileAuth(attachMeta(row.attach)!.url)"
                           target="_blank"
                           rel="noopener"
                         >{{ attachMeta(row.attach)!.name }}</a>
@@ -757,9 +875,9 @@ onMounted(load)
                         >{{ row.statusText }}</span>
                         <span v-else class="st-empty">—</span>
                         <div
-                          v-if="row.teacherNote"
+                          v-if="row.teacherNote && (row.statusTone === 'ok' || row.statusTone === 'fail')"
                           class="note-card"
-                          :class="row.statusTone === 'ok' ? 'ok' : 'fail'"
+                          :class="row.statusTone"
                         >
                           <div class="note-head">
                             <span class="note-ico" aria-hidden="true">
@@ -767,7 +885,13 @@ onMounted(load)
                               <template v-else>×</template>
                             </span>
                             <strong>{{
-                              row.statusTone === 'ok' ? '已通过' : '未通过'
+                              row.statusText === '验收失败'
+                                ? '验收失败'
+                                : row.statusText === '验收通过'
+                                  ? '验收通过'
+                                  : row.statusTone === 'ok'
+                                    ? '已通过'
+                                    : '未通过'
                             }}</strong>
                           </div>
                           <EllipsisTip :text="row.teacherNote" />
@@ -1247,6 +1371,10 @@ onMounted(load)
 .status-cell .st.fail {
   background: #fee2e2;
   color: #b91c1c;
+}
+.status-cell .st.note {
+  background: #f3f4f6;
+  color: #4b5563;
 }
 .status-cell .st.pending {
   background: #ffedd5;

@@ -2,11 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import api from '@/api/client'
-import type { ApplicationOut, UserOut } from '@/api/types'
+import type { ApplicationOut, CommunityMemberOut, CommunityOut, ProjectOut, UserOut } from '@/api/types'
 import ToastFeedback from '@/components/ToastFeedback.vue'
 import { useAuthStore } from '@/stores/auth'
 import { BIND_PROVIDERS, type BindField } from '@/utils/bindProviders'
-import { nodeLabel, statusLabel, statusTone } from '@/utils/statusLabel'
+import { projectStatusLabel, stageLabel, statusLabel, statusTone } from '@/utils/statusLabel'
 
 type Tab = 'home' | 'notices' | 'profile' | 'applications' | 'bindings' | 'password'
 
@@ -16,7 +16,9 @@ const router = useRouter()
 
 const tab = computed<Tab>(() => {
   const t = String(route.query.tab || 'home')
-  if (t === 'applications' && !auth.canApplyProjects) return 'home'
+  const orgOnlyNow = auth.isCommunityAdmin && !auth.isMentor && !auth.canApplyProjects
+  if (orgOnlyNow) return 'home'
+  if (!auth.canApplyProjects && (t === 'applications' || t === 'bindings')) return 'home'
   if (['notices', 'profile', 'applications', 'bindings', 'password', 'home'].includes(t)) {
     return t as Tab
   }
@@ -73,7 +75,15 @@ const pwdHint = computed(() => {
   if (!pwd.value.new_password) return '未输入'
   return ['偏弱', '一般', '较好'][pwdLevel.value - 1] || '偏弱'
 })
-const toast = ref<InstanceType<typeof ToastFeedback> | null>(null)
+const mentorOnly = computed(() => auth.isMentor && !auth.canApplyProjects)
+const orgOnly = computed(() => auth.isCommunityAdmin && !auth.isMentor && !auth.canApplyProjects)
+const orgCommunity = ref<CommunityOut | null>(null)
+const orgMentors = ref<CommunityMemberOut[]>([])
+const orgProjects = ref<ProjectOut[]>([])
+const mentorOrgs = ref<string[]>([])
+const ownedProjects = ref<ProjectOut[]>([])
+const mentorInbox = ref<ApplicationOut[]>([])
+const communityCatalog = ref<CommunityOut[]>([])
 
 const avatarText = computed(() => (auth.displayName || '?').slice(0, 2))
 
@@ -157,6 +167,30 @@ function syncForm(u: UserOut | null) {
 
 function boundOf(field: BindField) {
   return (auth.user?.[field] as string | null | undefined) || ''
+}
+
+async function loadOrgHome() {
+  const { data: mine } = await api.get<CommunityOut[]>('/communities/admin-of')
+  orgCommunity.value = mine[0] || null
+  const community = orgCommunity.value
+  if (!community) return
+  const [members, drafts, published, closed] = await Promise.all([
+    api.get<CommunityMemberOut[]>(`/communities/${community.id}/members`, { params: { role: 'mentor' } }),
+    api.get<ProjectOut[]>('/projects', { params: { community_id: community.id, status: 'draft' } }),
+    api.get<ProjectOut[]>('/projects', { params: { community_id: community.id, status: 'published' } }),
+    api.get<ProjectOut[]>('/projects', { params: { community_id: community.id, status: 'closed' } }),
+  ])
+  orgMentors.value = members.data
+  const seen = new Set<number>()
+  orgProjects.value = [...published.data, ...drafts.data, ...closed.data].filter((p) => {
+    if (seen.has(p.id)) return false
+    seen.add(p.id)
+    return true
+  })
+}
+
+function mentorOf(project: ProjectOut) {
+  return orgMentors.value.find((m) => m.user_id === project.mentor_id)?.display_name || '未指定'
 }
 
 function setTab(next: Tab) {
@@ -254,7 +288,32 @@ async function changePassword() {
 onMounted(async () => {
   if (!auth.user) await auth.fetchMe()
   syncForm(auth.user)
-  await Promise.all([loadApps(), loadNotices()])
+  const jobs: Promise<unknown>[] = [loadNotices()]
+  if (auth.canApplyProjects) jobs.push(loadApps())
+  if (mentorOnly.value) {
+    jobs.push(
+      api.get<CommunityOut[]>('/communities', { params: { status: 'approved' } }).then(({ data }) => {
+        communityCatalog.value = data
+      }),
+      api.get<ProjectOut[]>('/projects', { params: { owned: true } }).then(({ data }) => {
+        ownedProjects.value = data
+      }),
+      api.get<ApplicationOut[]>('/mentor/inbox').then(({ data }) => {
+        mentorInbox.value = data
+      }),
+    )
+  }
+  if (orgOnly.value) jobs.push(loadOrgHome())
+  await Promise.all(jobs)
+  if (mentorOnly.value) {
+    const ids = new Set(
+      (auth.user?.roles || [])
+        .filter((r) => r.code === 'mentor' && r.community_id)
+        .map((r) => r.community_id as number),
+    )
+    for (const p of ownedProjects.value) ids.add(p.community_id)
+    mentorOrgs.value = communityCatalog.value.filter((c) => ids.has(c.id)).map((c) => c.name)
+  }
   consumeBindResult()
 })
 
@@ -282,7 +341,7 @@ function consumeBindResult() {
   delete q.bind_ok
   delete q.bind_err
   delete q.login
-  router.replace({ path: '/me', query: { ...q, tab: 'bindings' } })
+  router.replace({ path: '/me', query: { ...q, tab: orgOnly.value ? 'home' : 'bindings' } })
 }
 </script>
 
@@ -294,7 +353,13 @@ function consumeBindResult() {
           <div class="me-side-av">{{ avatarText }}</div>
           <div class="me-side-meta">
             <strong>{{ auth.displayName }}</strong>
-            <span>{{ auth.user?.school || '完善学校信息' }}</span>
+            <span>{{
+              orgOnly
+                ? orgCommunity?.name || '组织账号'
+                : mentorOnly
+                  ? mentorOrgs.join('、') || '所属组织'
+                  : auth.user?.school || '完善学校信息'
+            }}</span>
           </div>
         </div>
 
@@ -308,7 +373,7 @@ function consumeBindResult() {
             </svg>
             概览
           </button>
-          <button type="button" :class="{ on: tab === 'notices' }" @click="setTab('notices')">
+          <button v-if="!orgOnly" type="button" :class="{ on: tab === 'notices' }" @click="setTab('notices')">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <path
                 fill="currentColor"
@@ -317,7 +382,7 @@ function consumeBindResult() {
             </svg>
             通知公告
           </button>
-          <button type="button" :class="{ on: tab === 'profile' }" @click="setTab('profile')">
+          <button v-if="!orgOnly" type="button" :class="{ on: tab === 'profile' }" @click="setTab('profile')">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <path
                 fill="currentColor"
@@ -341,7 +406,7 @@ function consumeBindResult() {
             我的项目
             <em v-if="activeApps.length" class="me-count">{{ activeApps.length }}</em>
           </button>
-          <button type="button" :class="{ on: tab === 'bindings' }" @click="setTab('bindings')">
+          <button v-if="!orgOnly && !mentorOnly" type="button" :class="{ on: tab === 'bindings' }" @click="setTab('bindings')">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <path
                 fill="currentColor"
@@ -351,7 +416,7 @@ function consumeBindResult() {
             平台绑定
             <em v-if="boundCount" class="me-count">{{ boundCount }}</em>
           </button>
-          <button type="button" :class="{ on: tab === 'password' }" @click="setTab('password')">
+          <button v-if="!orgOnly" type="button" :class="{ on: tab === 'password' }" @click="setTab('password')">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <path
                 fill="currentColor"
@@ -365,7 +430,6 @@ function consumeBindResult() {
             <p class="me-nav-label">工作台</p>
             <RouterLink v-if="auth.isMentor" to="/mentor">导师工作台</RouterLink>
             <RouterLink v-if="auth.isCommunityAdmin" to="/org">组织工作台</RouterLink>
-            <RouterLink v-if="auth.isCommunityAdmin" to="/community/reviews">社区审核</RouterLink>
           </template>
         </nav>
       </aside>
@@ -373,8 +437,101 @@ function consumeBindResult() {
       <main class="me-content">
         <ToastFeedback ref="toast" />
 
-        <!-- 概览 -->
-        <template v-if="tab === 'home'">
+        <template v-if="tab === 'home' && orgOnly">
+          <section class="me-banner">
+            <div class="me-banner-bg" aria-hidden="true" />
+            <div class="me-banner-body">
+              <div class="me-banner-av">
+                <img v-if="orgCommunity?.logo_url" :src="orgCommunity.logo_url" alt="" />
+                <template v-else>{{ (orgCommunity?.name || '组').slice(0, 1) }}</template>
+              </div>
+              <div class="me-banner-info">
+                <h1>{{ orgCommunity?.name || '组织账号' }}</h1>
+                <div class="me-chips">
+                  <span>社区管理员</span>
+                  <span class="soft">{{ auth.user?.email }}</span>
+                </div>
+                <p>账号和密码都由组委会发放，不能在这里修改或删除。对外资料在组织工作台编辑并发布。</p>
+              </div>
+              <div class="me-banner-ops">
+                <RouterLink v-if="orgCommunity" class="primary" :to="`/communities/${orgCommunity.slug}`">公开主页</RouterLink>
+                <RouterLink class="ghost" to="/org">去编辑</RouterLink>
+              </div>
+            </div>
+          </section>
+
+          <section class="me-kpi">
+            <button type="button">
+              <strong>{{ orgMentors.length }}</strong>
+              <span>旗下导师</span>
+            </button>
+            <button type="button">
+              <strong>{{ orgProjects.length }}</strong>
+              <span>项目</span>
+            </button>
+            <button type="button">
+              <strong>{{ orgProjects.filter((p) => p.status === 'published').length }}</strong>
+              <span>对外展示中</span>
+            </button>
+          </section>
+
+          <section class="me-grid">
+            <article class="card">
+              <header><h2>组织信息</h2></header>
+              <p v-if="!orgCommunity" class="empty">还没有绑定可管理的社区，请联系组委会。</p>
+              <dl v-else class="org-facts">
+                <div><dt>名称</dt><dd>{{ orgCommunity.name }}</dd></div>
+                <div><dt>简介</dt><dd>{{ orgCommunity.description || '还没写简介' }}</dd></div>
+                <div><dt>官网</dt><dd>{{ orgCommunity.homepage_url || '未填写' }}</dd></div>
+                <div><dt>仓库</dt><dd>{{ orgCommunity.gitea_org_url || '未填写' }}</dd></div>
+                <div>
+                  <dt>标签</dt>
+                  <dd>{{ orgCommunity.tags?.length ? orgCommunity.tags.join('、') : '未填写' }}</dd>
+                </div>
+              </dl>
+            </article>
+
+            <article class="card">
+              <header>
+                <h2>旗下导师</h2>
+                <RouterLink class="more" to="/org?tab=mentors">邀请</RouterLink>
+              </header>
+              <p v-if="!orgMentors.length" class="empty">还没有导师。到组织工作台用邀请码邀请。</p>
+              <ul v-else class="rows">
+                <li v-for="m in orgMentors" :key="m.user_id">
+                  <div>
+                    <strong>{{ m.display_name }}</strong>
+                    <small>{{ m.email }}</small>
+                  </div>
+                </li>
+              </ul>
+            </article>
+
+            <article class="card wide">
+              <header>
+                <h2>项目</h2>
+                <RouterLink class="more" to="/org">管理</RouterLink>
+              </header>
+              <p v-if="!orgProjects.length" class="empty">还没有项目。创建和分配导师在组织工作台完成。</p>
+              <div v-else class="mentor-proj">
+                <article v-for="p in orgProjects" :key="p.id">
+                  <div>
+                    <strong>{{ p.title }}</strong>
+                    <p>{{ p.summary || '暂无简介' }}</p>
+                    <small>
+                      导师 {{ mentorOf(p) }} · 名额 {{ p.seats_taken || 0 }}/{{ p.quota }} · {{ projectStatusLabel(p.status) }}
+                    </small>
+                  </div>
+                  <div class="mentor-proj-links">
+                    <RouterLink :to="`/projects/${p.id}`">查看任务</RouterLink>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </section>
+        </template>
+
+        <template v-else-if="tab === 'home'">
           <section class="me-banner">
             <div class="me-banner-bg" aria-hidden="true" />
             <div class="me-banner-body">
@@ -385,16 +542,20 @@ function consumeBindResult() {
                   <span v-for="t in roleTags" :key="t">{{ t }}</span>
                   <span v-if="auth.user?.email" class="soft">{{ auth.user.email }}</span>
                 </div>
-                <p>{{ form.bio || '在这里管理实习申请、开源账号绑定与个人资料。' }}</p>
-                <div class="me-progress">
+                <p v-if="mentorOnly">
+                  {{ auth.user?.email }} · {{ mentorOrgs.join('、') || '尚未分配组织' }}
+                </p>
+                <p v-else>{{ form.bio || '在这里管理实习申请、开源账号绑定与个人资料。' }}</p>
+                <div v-if="!mentorOnly" class="me-progress">
                   <span>资料完整度</span>
                   <div class="bar"><i :style="{ width: profileCompleteness + '%' }" /></div>
                   <b>{{ profileCompleteness }}%</b>
                 </div>
               </div>
               <div class="me-banner-ops">
-                <button type="button" class="primary" @click="setTab('profile')">编辑资料</button>
-                <RouterLink class="ghost" to="/projects">去看项目</RouterLink>
+                <button v-if="!mentorOnly" type="button" class="primary" @click="setTab('profile')">编辑资料</button>
+                <RouterLink v-if="mentorOnly" class="ghost" to="/mentor/projects">我的项目</RouterLink>
+                <RouterLink v-else class="ghost" to="/projects">去看项目</RouterLink>
               </div>
             </div>
           </section>
@@ -408,9 +569,13 @@ function consumeBindResult() {
               <strong>{{ completedApps.length }}</strong>
               <span>已结项</span>
             </button>
-            <button type="button" @click="setTab('bindings')">
+            <button v-if="!mentorOnly" type="button" @click="setTab('bindings')">
               <strong>{{ boundCount }}/{{ BIND_PROVIDERS.length }}</strong>
               <span>平台绑定</span>
+            </button>
+            <button v-else type="button">
+              <strong>{{ ownedProjects.length }}</strong>
+              <span>负责项目</span>
             </button>
             <button type="button" @click="setTab('notices')">
               <strong>{{ notices.length }}</strong>
@@ -431,7 +596,17 @@ function consumeBindResult() {
                   全部
                 </button>
               </header>
-              <p v-if="!auth.canApplyProjects" class="empty">组织侧账号请使用右侧工作台入口。</p>
+              <p v-if="mentorOnly && !ownedProjects.length" class="empty">还没有分配给你的项目。</p>
+              <ul v-else-if="mentorOnly" class="rows">
+                <li v-for="p in ownedProjects" :key="p.id">
+                  <RouterLink :to="`/projects/${p.id}`">
+                    <strong>{{ p.title }}</strong>
+                    <small>{{ mentorOrgs[0] || '所属组织' }}</small>
+                  </RouterLink>
+                  <span class="badge" :class="statusTone(p.status)">{{ projectStatusLabel(p.status) }}</span>
+                </li>
+              </ul>
+              <p v-else-if="!auth.canApplyProjects" class="empty">组织侧账号请使用右侧工作台入口。</p>
               <p v-else-if="appsLoading" class="empty">加载中…</p>
               <p v-else-if="!recentApps.length" class="empty">
                 暂无申请。
@@ -441,14 +616,72 @@ function consumeBindResult() {
                 <li v-for="a in recentApps" :key="a.id">
                   <RouterLink :to="`/student/applications/${a.id}?tab=task`">
                     <strong>{{ a.project_title || `项目 #${a.project_id}` }}</strong>
-                    <small>{{ nodeLabel(a.current_node) || '—' }}</small>
+                    <small>{{ stageLabel(a.status, a.current_node) || '—' }}</small>
                   </RouterLink>
                   <span class="badge" :class="statusTone(a.status)">{{ statusLabel(a.status) }}</span>
                 </li>
               </ul>
             </article>
 
-            <article class="card">
+            <article v-if="mentorOnly" class="card">
+              <header>
+                <h2>名下学生</h2>
+                <RouterLink class="more" to="/mentor">去处理</RouterLink>
+              </header>
+              <p v-if="!mentorInbox.length" class="empty">还没有学生申请你的项目。</p>
+              <ul v-else class="rows">
+                <li v-for="a in mentorInbox" :key="'m-' + a.id">
+                  <RouterLink :to="`/mentor/a/${a.id}`">
+                    <strong>{{ a.student_name || a.student_email || `同学 #${a.student_id}` }}</strong>
+                    <small>{{ a.project_title || '负责项目' }}</small>
+                  </RouterLink>
+                  <span class="badge" :class="statusTone(a.status)">{{ statusLabel(a.status) }}</span>
+                </li>
+              </ul>
+            </article>
+
+            <article v-if="mentorOnly" class="card wide">
+              <header>
+                <h2>项目一览</h2>
+                <RouterLink class="more" to="/mentor/projects">管理</RouterLink>
+              </header>
+              <div v-if="!ownedProjects.length" class="empty">还没有分配给你的项目。</div>
+              <div v-else class="mentor-proj">
+                <article v-for="p in ownedProjects" :key="'p-' + p.id">
+                  <div>
+                    <strong>{{ p.title }}</strong>
+                    <p>{{ p.summary || '暂无简介' }}</p>
+                    <small>
+                      {{ mentorOrgs.join('、') || '所属组织' }}
+                      · 名额 {{ p.seats_taken || 0 }}/{{ p.quota }}
+                      · {{ projectStatusLabel(p.status) }}
+                    </small>
+                  </div>
+                  <div class="mentor-proj-links">
+                    <RouterLink :to="`/projects/${p.id}`">任务书</RouterLink>
+                    <RouterLink to="/mentor">审核学生</RouterLink>
+                  </div>
+                </article>
+              </div>
+            </article>
+
+            <article v-if="mentorOnly" class="card">
+              <header>
+                <h2>近期公告</h2>
+                <button type="button" class="more" @click="setTab('notices')">全部</button>
+              </header>
+              <p v-if="!notices.length" class="empty">暂无公告。结项结果发布后会出现在结项公示。</p>
+              <ul v-else class="rows">
+                <li v-for="n in notices.slice(0, 4)" :key="n.id">
+                  <RouterLink to="/completed">
+                    <strong>{{ n.title }}</strong>
+                    <small>{{ n.published_at || '近期' }}</small>
+                  </RouterLink>
+                </li>
+              </ul>
+            </article>
+
+            <article v-if="!mentorOnly" class="card">
               <header>
                 <h2>下一步</h2>
               </header>
@@ -462,7 +695,7 @@ function consumeBindResult() {
               </ul>
             </article>
 
-            <article class="card wide">
+            <article v-if="!mentorOnly" class="card wide">
               <header>
                 <h2>开源账号绑定</h2>
                 <button type="button" class="more" @click="setTab('bindings')">管理</button>
@@ -594,7 +827,7 @@ function consumeBindResult() {
               >
                 <div>
                   <strong>{{ a.project_title || `项目 #${a.project_id}` }}</strong>
-                  <span>申请 #{{ a.id }} · {{ nodeLabel(a.current_node) }}</span>
+                  <span>申请 #{{ a.id }} · {{ stageLabel(a.status, a.current_node) }}</span>
                 </div>
                 <em class="badge" :class="statusTone(a.status)">{{ statusLabel(a.status) }}</em>
               </RouterLink>
@@ -644,7 +877,8 @@ function consumeBindResult() {
                   <span class="pwd-lock" aria-hidden="true">锁</span>
                   <div>
                     <h1>修改密码</h1>
-                    <p>修改成功后请使用新密码登录，旧密码会立即失效。</p>
+                    <p v-if="orgOnly">登录邮箱由组委会发放，不能更换。这里只改你自己的登录密码。</p>
+                    <p v-else>修改成功后请使用新密码登录，旧密码会立即失效。</p>
                   </div>
                 </div>
                 <form class="form pwd-form" @submit.prevent="changePassword">
@@ -1081,6 +1315,26 @@ function consumeBindResult() {
   grid-template-columns: 1.15fr 0.85fr;
   gap: 12px;
 }
+.mentor-proj {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mentor-proj article {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+.mentor-proj strong { display: block; margin-bottom: 4px; }
+.mentor-proj p { margin: 0 0 6px; color: #595959; font-size: 0.88rem; }
+.mentor-proj small { color: #8c8c8c; }
+.mentor-proj-links { display: flex; flex-direction: column; gap: 6px; white-space: nowrap; }
+.mentor-proj-links a { color: #0b3d91; font-size: 0.86rem; }
 .card {
   background: #fff;
   border: 1px solid #e8ebf0;
@@ -1090,6 +1344,12 @@ function consumeBindResult() {
 .card.wide {
   grid-column: 1 / -1;
 }
+.org-facts { margin: 0; }
+.org-facts div { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); gap: 8px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.org-facts div:last-child { border-bottom: 0; }
+.org-facts dt { color: #8c8c8c; }
+.org-facts dd { margin: 0; }
+.me-banner-av img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .card header {
   display: flex;
   justify-content: space-between;

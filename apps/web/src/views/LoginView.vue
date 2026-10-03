@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
@@ -12,8 +12,6 @@ const portal = ref<Portal>('student')
 const email = ref('')
 const password = ref('')
 const error = ref('')
-
-const DEMO_PASSWORD = 'Demo@123456'
 
 watch(
   () => route.query.role,
@@ -36,17 +34,12 @@ const hint = computed(() => {
   return '学生登录后可浏览项目、提交申请并跟踪三级审核进度。'
 })
 
-const demos = computed(() => {
-  if (portal.value === 'mentor') return [{ label: '导师演示', email: 'mentor@demo.hust.edu.cn' }]
-  if (portal.value === 'org') return [{ label: '社区演示', email: 'admin@demo.hust.edu.cn' }]
-  return [{ label: '学生演示', email: 'student@demo.hust.edu.cn' }]
+onMounted(() => {
+  const notice = sessionStorage.getItem('intern_platform_auth_notice')
+  if (!notice) return
+  error.value = notice
+  sessionStorage.removeItem('intern_platform_auth_notice')
 })
-
-function fillDemo(demoEmail: string) {
-  error.value = ''
-  email.value = demoEmail
-  password.value = DEMO_PASSWORD
-}
 
 function setPortal(p: Portal) {
   portal.value = p
@@ -134,7 +127,7 @@ async function onSubmit() {
             type="password"
             required
             autocomplete="current-password"
-            :placeholder="DEMO_PASSWORD"
+            placeholder="请输入密码"
           />
         </label>
         <p v-if="error" class="error">{{ error }}</p>
@@ -148,23 +141,6 @@ async function onSubmit() {
           {{ auth.loading ? '登录中…' : '登录' }}
         </button>
       </form>
-
-      <div class="demo-fill">
-        <p class="muted" style="margin: 0 0 0.45rem; font-size: 0.85rem">
-          密码均为 <code>{{ DEMO_PASSWORD }}</code>
-        </p>
-        <div class="demo-btns">
-          <button
-            v-for="d in demos"
-            :key="d.email"
-            type="button"
-            class="demo-chip"
-            @click="fillDemo(d.email)"
-          >
-            填入{{ d.label }}
-          </button>
-        </div>
-      </div>
 
       <p class="muted" style="margin-top: 0.75rem">
         <template v-if="portal === 'mentor'">
@@ -188,28 +164,5 @@ async function onSubmit() {
 .auth-tab.mentor.active {
   background: #ea580c;
   color: #fff;
-}
-.demo-fill {
-  margin-top: 1.1rem;
-}
-.demo-btns {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-.demo-chip {
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  color: #334155;
-  border-radius: 999px;
-  padding: 0.28rem 0.75rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-.demo-chip:hover {
-  border-color: #ea580c;
-  color: #c2410c;
-  background: #fff7ed;
 }
 </style>

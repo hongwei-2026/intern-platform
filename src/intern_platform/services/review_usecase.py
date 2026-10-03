@@ -88,7 +88,8 @@ def resolve_actions(
             raise AuthorizationError(f"导师不可在状态 {status_value} 通过")
         if actor_role == "community_admin":
             if status_value == "community_review":
-                return ["approve_community"]
+                # 社区通过后组委会直接接收中选结果，不再单独点一次通过
+                return ["approve_community", "approve_committee"]
             raise AuthorizationError(f"社区管理员不可在状态 {status_value} 通过")
         if actor_role == "committee":
             if status_value == "committee_review":
@@ -196,11 +197,6 @@ class ReviewUseCase:
         taken = seat_taken_count(self.session, project.id)
         if taken >= quota:
             raise AuthorizationError("人选已满，设计文档审核已关闭，不能再通过")
-        pending = self._pending_designs(project.id)
-        window = max(0, quota - taken)
-        allowed_ids = {row.id for row in pending[:window]}
-        if application.id not in allowed_ids:
-            raise AuthorizationError("请先审核更早提交的设计文档，超出名额的稍后排队")
 
     def _close_design_reviews_if_full(self, application: Application, auth: AuthUser) -> None:
         from intern_platform.services.notification_service import NotificationService
@@ -418,6 +414,61 @@ class ReviewUseCase:
                         )
                     if commit:
                         self.session.commit()
+                    student_name = student.display_name if student is not None else "学生"
+                    if last.to_status == "community_review" and project is not None:
+                        from intern_platform.services.message_service import community_admin_ids
+
+                        for user_id in community_admin_ids(self.session, project.community_id):
+                            NotificationService(self.session).create(
+                                user_id=user_id,
+                                title="待社区审核中选",
+                                body=f"「{title}」{student_name} 导师已通过设计，请社区审核；通过后组委会会自动接收中选。",
+                                kind="community_review",
+                                project_id=application.project_id,
+                                application_id=application.id,
+                            )
+                        if commit:
+                            self.session.commit()
+                    if last.to_status == "community_final_review" and project is not None:
+                        from intern_platform.services.message_service import (
+                            committee_user_ids,
+                            community_admin_ids,
+                        )
+
+                        for user_id in community_admin_ids(self.session, project.community_id):
+                            NotificationService(self.session).create(
+                                user_id=user_id,
+                                title="待报送结项材料",
+                                body=f"「{title}」{student_name} 导师已通过验收，请社区报送；报送后组委会会自动接收。",
+                                kind="community_final",
+                                project_id=application.project_id,
+                                application_id=application.id,
+                            )
+                        for user_id in committee_user_ids(self.session):
+                            NotificationService(self.session).create(
+                                user_id=user_id,
+                                title="导师已通过验收",
+                                body=f"「{title}」{student_name} 导师已通过验收，待社区报送后自动计入组委会结项名单。",
+                                kind="committee_roster",
+                                project_id=application.project_id,
+                                application_id=application.id,
+                            )
+                        if commit:
+                            self.session.commit()
+                    if last.to_status == "selected" and project is not None and actor_role == "community_admin":
+                        from intern_platform.services.message_service import committee_user_ids
+
+                        for user_id in committee_user_ids(self.session):
+                            NotificationService(self.session).create(
+                                user_id=user_id,
+                                title="社区已通过，组委会已接收中选",
+                                body=f"「{title}」{student_name} 经社区审核通过，已自动计入中选。",
+                                kind="selection",
+                                project_id=application.project_id,
+                                application_id=application.id,
+                            )
+                        if commit:
+                            self.session.commit()
             except Exception:  # noqa: BLE001
                 mail_hint = "站内通知发送异常，请检查服务日志"
                 pass

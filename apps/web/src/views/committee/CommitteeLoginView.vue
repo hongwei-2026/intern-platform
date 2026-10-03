@@ -14,7 +14,7 @@ const error = ref('')
 async function onSubmit() {
   error.value = ''
   try {
-    const user = await auth.login(email.value.trim(), password.value)
+    const user = await auth.login(email.value.trim(), password.value, 'ops')
     const roles = user.roles?.map((r) => r.code) ?? []
     if (!roles.includes('committee')) {
       auth.logout()

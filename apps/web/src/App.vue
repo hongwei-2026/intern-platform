@@ -48,7 +48,7 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
   <div class="site">
     <header class="topnav">
       <div class="topnav-inner">
-        <RouterLink class="brand" :to="isCommitteeArea || isOpsLogin ? '/committee' : '/'">
+        <RouterLink class="brand" :to="isOpsLogin ? '/ops/login' : '/'">
           <span class="brand-mark" aria-hidden="true">
             <img src="/logos/penguin-blue.svg" alt="" />
           </span>
@@ -58,34 +58,27 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
           </span>
         </RouterLink>
 
-        <nav v-if="isCommitteeArea && auth.hasRole('committee')" class="topnav-links" aria-label="组委会导航">
-          <RouterLink to="/committee">工作台</RouterLink>
-          <RouterLink to="/committee/oauth">开通账号绑定</RouterLink>
-        </nav>
-        <nav v-else-if="!isOpsLogin && !isCommitteeArea" class="topnav-links" aria-label="主导航">
+        <nav v-if="!isOpsLogin" class="topnav-links" aria-label="主导航">
+          <RouterLink v-if="auth.hasRole('committee')" class="nav-workbench" to="/committee">组委会工作台</RouterLink>
           <RouterLink
             v-if="auth.isLoggedIn && auth.isMentor"
             class="nav-workbench"
             to="/mentor"
           >导师工作台</RouterLink>
           <RouterLink
-            v-if="auth.isLoggedIn && (auth.isCommunityAdmin || auth.hasRole('committee')) && !auth.isMentor"
+            v-if="auth.isLoggedIn && auth.isCommunityAdmin && !auth.isMentor"
             class="nav-workbench org"
             to="/org"
           >组织工作台</RouterLink>
           <RouterLink to="/">首页</RouterLink>
-          <RouterLink v-if="!auth.isLoggedIn || auth.canApplyProjects" to="/projects">查看项目</RouterLink>
+          <RouterLink v-if="!auth.isLoggedIn || auth.canApplyProjects || auth.hasRole('committee')" to="/projects">查看项目</RouterLink>
           <RouterLink to="/completed">结项公示</RouterLink>
           <RouterLink to="/news">最新动态</RouterLink>
           <RouterLink to="/guide">参与指南</RouterLink>
         </nav>
 
         <div class="nav-actions">
-          <template v-if="auth.isLoggedIn && auth.hasRole('committee') && (isCommitteeArea || isOpsLogin)">
-            <span class="user-chip-name" style="margin-right: 8px">{{ auth.displayName }}</span>
-            <button class="btn sm secondary" type="button" @click="logout">退出</button>
-          </template>
-          <template v-else-if="auth.isLoggedIn && !isOpsLogin && !isCommitteeArea">
+          <template v-if="auth.isLoggedIn && !isOpsLogin">
             <NotificationBell />
             <div ref="menuRoot" class="user-menu">
               <button
@@ -100,9 +93,21 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
                 <span class="user-chip-caret">▾</span>
               </button>
               <div v-show="menuOpen" class="user-dropdown" role="menu">
-                <RouterLink role="menuitem" to="/me" @click="menuOpen = false">个人中心</RouterLink>
-                <RouterLink role="menuitem" to="/me?tab=bindings" @click="menuOpen = false">平台绑定</RouterLink>
-                <RouterLink role="menuitem" to="/me?tab=password" @click="menuOpen = false">修改密码</RouterLink>
+                <RouterLink role="menuitem" to="/me" @click="menuOpen = false">{{
+                  auth.isCommunityAdmin && !auth.isMentor && !auth.canApplyProjects ? '组织主页' : '个人中心'
+                }}</RouterLink>
+                <RouterLink
+                  v-if="auth.canApplyProjects"
+                  role="menuitem"
+                  to="/me?tab=bindings"
+                  @click="menuOpen = false"
+                >平台绑定</RouterLink>
+                <RouterLink
+                  v-if="!(auth.isCommunityAdmin && !auth.isMentor && !auth.canApplyProjects)"
+                  role="menuitem"
+                  to="/me?tab=password"
+                  @click="menuOpen = false"
+                >修改密码</RouterLink>
                 <RouterLink
                   v-if="auth.canApplyProjects"
                   role="menuitem"
@@ -116,7 +121,13 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
                   @click="menuOpen = false"
                 >导师工作台</RouterLink>
                 <RouterLink
-                  v-if="auth.isCommunityAdmin || auth.hasRole('committee')"
+                  v-if="auth.hasRole('committee')"
+                  role="menuitem"
+                  to="/committee"
+                  @click="menuOpen = false"
+                >组委会工作台</RouterLink>
+                <RouterLink
+                  v-if="auth.isCommunityAdmin"
                   role="menuitem"
                   to="/org"
                   @click="menuOpen = false"

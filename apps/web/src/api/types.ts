@@ -115,6 +115,8 @@ export interface ProjectOut {
   seats_taken?: number
   seats_available?: number | null
   reviewing_count?: number
+  mentor_name?: string | null
+  mentor_email?: string | null
 }
 
 /** 昇腾式任务动态行（项目维度，昵称脱敏） */
@@ -146,6 +148,8 @@ export interface ApplicationOut {
   current_node: string
   version: number
   project_title?: string | null
+  latest_update_at?: string | null
+  update_badge?: 'progress' | 'acceptance' | null
   review_records?: ReviewRecordOut[]
   created_at?: string | null
   updated_at?: string | null
@@ -198,6 +202,8 @@ export interface MessageOut {
   code_url?: string | null
   attachment_url?: string | null
   attachment_name?: string | null
+  community_name?: string | null
+  reward_status?: string | null
   created_at?: string | null
 }
 

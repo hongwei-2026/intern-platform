@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, joinedload
 
 from intern_platform.config import get_settings
@@ -119,6 +119,19 @@ def roles_payload(bindings: list[RoleBinding]) -> list[dict[str, Any]]:
     return [{"code": b.code, "community_id": b.community_id} for b in bindings]
 
 
+def user_is_disabled(db: Session, user_id: int) -> bool:
+    """停用记在后来加上的 users.disabled 列。旧库没有这一列时视为未停用。"""
+    try:
+        flag = db.execute(
+            text("SELECT disabled FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).scalar()
+    except Exception:
+        db.rollback()
+        return False
+    return int(flag or 0) == 1
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: Session = Depends(get_db),
@@ -142,6 +155,12 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    if user_is_disabled(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="账号已停用，请联系组委会",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return AuthUser(user=user, roles=load_user_roles(db, user.id))
 
 

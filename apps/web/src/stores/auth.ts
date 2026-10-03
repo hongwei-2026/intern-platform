@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import api, { getStoredToken, setStoredToken } from '@/api/client'
+import api, { getStoredToken, isOpsPath, setStoredToken } from '@/api/client'
 import type { UserOut } from '@/api/types'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -33,15 +33,23 @@ export const useAuthStore = defineStore('auth', () => {
     return '/me'
   }
 
-  async function login(email: string, password: string) {
+  async function login(email: string, password: string, scope: 'public' | 'ops' = 'public') {
     loading.value = true
     try {
       const { data } = await api.post<{ access_token: string; user: UserOut }>('/auth/login', {
         email,
         password,
       })
+      const roles = data.user.roles.map((role) => role.code)
+      const committeeOnly = roles.includes('committee') && !roles.some((code) => ['student', 'mentor', 'community_admin'].includes(code))
+      if (scope === 'public' && committeeOnly) {
+        throw new Error('组委会账号不能从学生入口登录')
+      }
+      if (scope === 'ops' && !roles.includes('committee')) {
+        throw new Error('该账号无组委会权限')
+      }
       token.value = data.access_token
-      setStoredToken(data.access_token)
+      setStoredToken(data.access_token, scope)
       user.value = data.user
       return data.user
     } finally {
@@ -91,6 +99,14 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function alignScope(path: string) {
+    const next = getStoredToken(isOpsPath(path) ? 'ops' : 'public')
+    if (next !== token.value) {
+      token.value = next
+      user.value = null
+    }
+  }
+
   async function fetchMe() {
     if (!token.value) {
       user.value = null
@@ -98,18 +114,33 @@ export const useAuthStore = defineStore('auth', () => {
     }
     try {
       const { data } = await api.get<UserOut>('/auth/me')
+      const codes = data.roles.map((role) => role.code)
+      const committeeOnly = codes.includes('committee') && !codes.some((code) => ['student', 'mentor', 'community_admin'].includes(code))
+      if (committeeOnly && !isOpsPath()) {
+        const kept = token.value
+        setStoredToken(kept, 'ops')
+        setStoredToken(null, 'public')
+        token.value = null
+        user.value = null
+        return null
+      }
       user.value = data
       return data
-    } catch {
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : ''
       logout()
+      if (message.includes('已停用')) {
+        sessionStorage.setItem('intern_platform_auth_notice', message)
+        return 'disabled'
+      }
       return null
     }
   }
 
   function logout() {
+    setStoredToken(null, isOpsPath() ? 'ops' : 'public')
     token.value = null
     user.value = null
-    setStoredToken(null)
   }
 
   return {
@@ -128,6 +159,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     register,
     registerMentor,
+    alignScope,
     fetchMe,
     logout,
   }

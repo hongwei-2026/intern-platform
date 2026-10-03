@@ -14,6 +14,7 @@ from intern_platform.models.project import Project
 from intern_platform.repositories.audit_log import AuditLogRepository
 from intern_platform.repositories.workflow_event import WorkflowEventRepository
 from intern_platform.schemas.business import ProjectCreate, ProjectUpdate
+from intern_platform.services.notification_service import NotificationService
 
 
 def _tech_stack_to_str(value: list[str] | str | None) -> str | None:
@@ -116,9 +117,11 @@ class ProjectService:
             quota=body.quota,
             repo_url=body.repo_url,
             apply_deadline=body.apply_deadline,
-            status="draft",
+            status="published",
         )
         self.session.add(project)
+        self.session.flush()
+        self._notify_mentor_published(project)
         self.session.commit()
         self.session.refresh(project)
         return project
@@ -133,6 +136,28 @@ class ProjectService:
         if not (project.mentor_id == auth.id or is_org):
             raise PermissionError("无权修改项目")
         data = body.model_dump(exclude_unset=True)
+        if project.status == "offline":
+            from intern_platform.models.application import Application
+
+            finished = self.session.scalar(
+                select(Application.id).where(
+                    Application.project_id == project.id,
+                    Application.status.in_(
+                        ("completed", "community_final_review", "committee_final_review")
+                    ),
+                )
+            )
+            if finished is not None:
+                raise ValueError("已有学生结项，下架后不能再改任务内容")
+        if "quota" in data:
+            from intern_platform.services.project_presenters import seat_taken_count
+
+            quota = int(data["quota"] or 0)
+            taken = seat_taken_count(self.session, project.id)
+            if quota < 1:
+                raise ValueError("名额至少为 1")
+            if quota < taken:
+                raise ValueError(f"名额不能小于已入选人数 {taken}")
         if "tech_stack" in data:
             data["tech_stack"] = _tech_stack_to_str(data["tech_stack"])
         # 仅组织侧可改派导师
@@ -215,9 +240,89 @@ class ProjectService:
             actor_id=auth.id,
             actor_role=actor_role,
         )
+        if before["status"] != "published":
+            self._notify_mentor_published(project)
         self.session.commit()
         self.session.refresh(project)
         return project
+
+    def unpublish(
+        self,
+        auth: AuthUser,
+        project_id: int,
+        ledger: LedgerRequestContext,
+    ) -> Project:
+        """从公开列表撤下。已有申请保留，新申请只接受已发布项目。"""
+        project = self.get(project_id)
+        if project is None:
+            raise LookupError("项目不存在")
+        if project.status not in {"published", "closed"}:
+            raise ValueError("只有已发布或已关闭接取的项目可以下架")
+        if not (
+            project.mentor_id == auth.id
+            or auth.has_role("committee")
+            or auth.has_community_role("community_admin", project.community_id)
+        ):
+            raise PermissionError("仅项目导师、社区管理员或组委会可下架")
+        before = {"status": project.status}
+        project.status = "offline"
+        actor_role = (
+            "committee"
+            if auth.has_role("committee") and project.mentor_id != auth.id
+            else (
+                "community_admin"
+                if auth.has_community_role("community_admin", project.community_id)
+                and project.mentor_id != auth.id
+                else "mentor"
+            )
+        )
+        self.audits.create(
+            actor_id=auth.id,
+            actor_role=actor_role,
+            action="project.unpublish",
+            resource_type="project",
+            resource_id=project.id,
+            before=before,
+            after={"status": project.status},
+            outcome="SUCCESS",
+            request_id=ledger.request_id,
+            trace_id=ledger.trace_id,
+            ip=ledger.ip,
+            user_agent=ledger.user_agent,
+        )
+        self.events.create(
+            event_type="project.unpublish",
+            aggregate_type="project",
+            aggregate_id=project.id,
+            payload={"status": "offline"},
+            request_id=ledger.request_id,
+            correlation_id=ledger.request_id,
+            actor_id=auth.id,
+            actor_role=actor_role,
+        )
+        if project.mentor_id:
+            NotificationService(self.session).create(
+                user_id=project.mentor_id,
+                title="项目已下架",
+                body=f"「{project.title}」已从公开列表撤下。学生主页看不到它，也不能新申请。已有申请还在。",
+                kind="project_unpublished",
+                project_id=project.id,
+            )
+        self.session.commit()
+        self.session.refresh(project)
+        return project
+
+    def _notify_mentor_published(self, project: Project) -> None:
+        """只通知负责导师。学生能在项目列表看到，不收这条消息。"""
+        if not project.mentor_id:
+            return
+        NotificationService(self.session).create(
+            user_id=project.mentor_id,
+            title="社区发布了新项目",
+            body=f"「{project.title}」已发布。学生可以在项目列表看到并申请，这条通知不会发给学生。",
+            kind="project_published",
+            project_id=project.id,
+        )
 
     def close(self, auth: AuthUser, project_id: int) -> Project:
         project = self.get(project_id)

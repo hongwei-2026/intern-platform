@@ -6,8 +6,11 @@ from intern_platform.models.application_message import ApplicationMessage
 from intern_platform.models.audit_log import AuditLog
 from intern_platform.models.community import Community
 from intern_platform.models.community_extension import CommunityExtension
+from intern_platform.models.cooperation_case import CooperationCase
 from intern_platform.models.final_submission import FinalSubmission
 from intern_platform.models.integration_setting import IntegrationSetting
+from intern_platform.models.liaison_message import LiaisonMessage
+from intern_platform.models.mentor_update_seen import MentorUpdateSeen
 from intern_platform.models.notification import Notification
 from intern_platform.models.project import Project
 from intern_platform.models.review_record import ReviewRecord
@@ -22,8 +25,11 @@ __all__ = [
     "AuditLog",
     "Community",
     "CommunityExtension",
+    "CooperationCase",
     "FinalSubmission",
     "IntegrationSetting",
+    "LiaisonMessage",
+    "MentorUpdateSeen",
     "Notification",
     "Project",
     "ReviewRecord",

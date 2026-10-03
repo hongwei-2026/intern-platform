@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { getStoredToken, withFileAuth } from '@/api/client'
 import * as pdfjs from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
@@ -65,7 +66,10 @@ async function loadPdf(url: string) {
   if (!url) return
   loading.value = true
   try {
-    const res = await fetch(url, { credentials: 'same-origin' })
+    const headers: HeadersInit = {}
+    const token = getStoredToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await fetch(withFileAuth(url), { credentials: 'same-origin', headers })
     if (!res.ok) throw new Error(`加载失败（${res.status}）`)
     const buf = await res.arrayBuffer()
     const blob = new Blob([buf], { type: 'application/pdf' })
@@ -74,6 +78,10 @@ async function loadPdf(url: string) {
     pdfDoc = await task.promise
     pageCount.value = pdfDoc.numPages
     page.value = 1
+    const first = await pdfDoc.getPage(1)
+    const base = first.getViewport({ scale: 1 })
+    const avail = Math.min(window.innerWidth * 0.9, 1200)
+    scale.value = Math.min(2.2, Math.max(1, Number((avail / base.width).toFixed(2))))
     loading.value = false
     await nextTick()
     await drawPage()
@@ -123,7 +131,7 @@ async function zoomBy(delta: number) {
 
 function openTab() {
   if (objectUrl) window.open(objectUrl, '_blank', 'noopener')
-  else if (props.url) window.open(props.url, '_blank', 'noopener')
+  else if (props.url) window.open(withFileAuth(props.url), '_blank', 'noopener')
 }
 
 onMounted(() => window.addEventListener('keydown', onKey))
@@ -199,8 +207,9 @@ watch(
   padding: 1.25rem;
 }
 .pdf-shell {
-  width: min(1080px, 100%);
-  max-height: min(92vh, 920px);
+  width: min(1280px, 96vw);
+  height: min(92vh, 980px);
+  max-height: 92vh;
   background: #fff;
   border-radius: 10px;
   overflow: hidden;

@@ -4,6 +4,7 @@ import { useRoute, useRouter, RouterLink } from 'vue-router'
 import api from '@/api/client'
 import type { ApplicationOut } from '@/api/types'
 import ZipDropZone from '@/components/ZipDropZone.vue'
+import AgreementDialog from '@/components/AgreementDialog.vue'
 import PageCrumb from '@/components/PageCrumb.vue'
 import { resolveCrumbs } from '@/utils/crumbTrail'
 
@@ -17,6 +18,16 @@ const codeUrl = ref('')
 const zipUrl = ref('')
 const zipName = ref('')
 const agreed = ref(false)
+const agreeOpen = ref(false)
+const progressTerms = [
+  '一、本协议适用于在本平台更新任务进展。你提交的说明、压缩包、设计文档链接和代码链接，只用于导师查看进度并给出建议。',
+  '二、进展材料不是结项验收，不会因此通过或退回验收。请只放与当前进度有关的内容，不要夹带账号密码或其他无关隐私。',
+  '三、勾选同意并提交，即表示你已阅读本协议，并授权导师按上述范围查看这些材料。未同意本协议，不能提交进展。',
+]
+
+function acceptTerms() {
+  agreed.value = true
+}
 const busy = ref(false)
 const error = ref('')
 
@@ -60,7 +71,7 @@ async function submit() {
     return
   }
   if (!agreed.value) {
-    error.value = '请先勾选同意信息收集说明'
+    error.value = '请先阅读并同意《任务进展提交协议》'
     return
   }
   if (!app.value) return
@@ -90,6 +101,12 @@ onMounted(load)
 
 <template>
   <div class="page wide hw-form-page">
+    <AgreementDialog
+      v-model:open="agreeOpen"
+      title="任务进展提交协议"
+      :paragraphs="progressTerms"
+      @agree="acceptTerms"
+    />
     <PageCrumb :items="crumbs" />
 
     <h1 class="page-title">{{ app?.project_title || `申请 #${id()}` }}</h1>
@@ -151,14 +168,16 @@ onMounted(load)
       </div>
 
       <label class="agree">
-        <input v-model="agreed" type="checkbox" />
+        <input v-model="agreed" type="checkbox" :disabled="busy" />
         <span>
-          已阅读并同意：提交任务进展时将收集附件、设计文档链接、代码链接与说明，用于任务进度审视与运营。
+          我已阅读并同意
+          <button type="button" class="as-link" @click.prevent="agreeOpen = true">《任务进展提交协议》</button>
+          。未同意不能提交进展。
         </span>
       </label>
 
       <div class="actions">
-        <button class="btn primary" type="button" :disabled="busy" @click="submit">
+        <button class="btn primary" type="button" :disabled="busy || !agreed" @click="submit">
           提交进展
         </button>
         <RouterLink class="btn outline" :to="backTo">取消</RouterLink>
@@ -240,16 +259,16 @@ textarea {
 }
 .agree {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: row;
   align-items: flex-start;
-  font-size: 0.82rem;
-  color: #4b5563;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  color: #334155;
   margin: 1.35rem 0 1.25rem;
-  line-height: 1.45;
+  line-height: 1.55;
 }
-.agree input {
-  margin-top: 0.2rem;
-}
+.agree input { margin-top: 0.25rem; flex: 0 0 auto; }
+.as-link { border: 0; background: none; padding: 0; color: #1677ff; font: inherit; cursor: pointer; text-decoration: underline; }
 .actions {
   display: flex;
   gap: 0.55rem;

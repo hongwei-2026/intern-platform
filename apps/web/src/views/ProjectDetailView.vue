@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, RouterLink, useRouter } from 'vue-router'
 import api from '@/api/client'
 import type { ApplicationOut, CommunityOut, ProjectOut } from '@/api/types'
 import ToastFeedback from '@/components/ToastFeedback.vue'
-import PdfDropZone from '@/components/PdfDropZone.vue'
 import PdfPreviewModal from '@/components/PdfPreviewModal.vue'
 import PageCrumb from '@/components/PageCrumb.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -24,25 +23,25 @@ const auth = useAuthStore()
 const project = ref<ProjectOut | null>(null)
 const community = ref<CommunityOut | null>(null)
 const myApp = ref<ApplicationOut | null>(null)
+const activeTask = ref<ApplicationOut | null>(null)
+const OPEN_TASK = [
+  'submitted',
+  'mentor_review',
+  'community_review',
+  'committee_review',
+  'selected',
+  'in_progress',
+  'final_submitted',
+  'mentor_final_review',
+  'final_rejected',
+]
 const error = ref('')
-const applyError = ref('')
-const applyOk = ref('')
-const submitting = ref(false)
-const showApply = ref(false)
 const showTop = ref(false)
-const applyRef = ref<HTMLElement | null>(null)
 const toast = ref<InstanceType<typeof ToastFeedback> | null>(null)
 
 const previewOpen = ref(false)
 const previewUrl = ref('')
 const previewTitle = ref('')
-
-const statement = ref('')
-const resumeFile = ref<File | null>(null)
-const designFile = ref<File | null>(null)
-const resumeUrl = ref('')
-const designUrl = ref('')
-const submitNow = ref(true)
 
 const brief = computed(() =>
   parseBrief(project.value?.description, project.value?.summary),
@@ -60,7 +59,7 @@ const canApply = computed(() => auth.canApplyProjects)
 const canReapply = computed(
   () =>
     !!myApp.value &&
-    ['rejected', 'final_rejected', 'withdrawn', 'draft'].includes(myApp.value.status),
+    ['rejected', 'withdrawn', 'draft'].includes(myApp.value.status),
 )
 const isOwnMentorProject = computed(
   () =>
@@ -82,7 +81,8 @@ const canOpenApply = computed(
   () =>
     project.value?.status === 'published' &&
     (!myApp.value || canReapply.value) &&
-    !seatsFull.value,
+    !seatsFull.value &&
+    !activeTask.value,
 )
 const iAmSelected = computed(
   () =>
@@ -161,7 +161,7 @@ async function load() {
   error.value = ''
   community.value = null
   myApp.value = null
-  showApply.value = false
+  activeTask.value = null
   const id = route.params.id
   try {
     const { data } = await api.get<ProjectOut>(`/projects/${id}`)
@@ -178,19 +178,37 @@ async function load() {
       } catch {
         myApp.value = null
       }
+      try {
+        const { data: allMine } = await api.get<ApplicationOut[]>('/applications/mine')
+        const currentId = Number(id)
+        activeTask.value =
+          allMine.find(
+            (item) => item.project_id !== currentId && OPEN_TASK.includes(item.status),
+          ) || null
+      } catch {
+        activeTask.value = null
+      }
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   }
 }
 
-async function openApply() {
-  if (!auth.canApplyProjects) {
+function applyPath() {
+  return `/projects/${route.params.id}/apply`
+}
+
+function openApply() {
+  if (auth.isLoggedIn && !auth.canApplyProjects) {
     toast.value?.show('组织侧账号不能申请项目，请使用学生账号', 'err')
     return
   }
   if (!auth.isLoggedIn) {
-    router.push({ name: 'login', query: { redirect: route.fullPath, role: 'student' } })
+    router.push({ name: 'login', query: { redirect: applyPath(), role: 'student' } })
+    return
+  }
+  if (activeTask.value) {
+    toast.value?.show(`你正在进行「${activeTask.value.project_title || '另一个任务'}」，结束前不能再接取`, 'err')
     return
   }
   if (seatsFull.value) {
@@ -203,9 +221,7 @@ async function openApply() {
     router.push(`/student/applications/${myApp.value.id}?tab=task`)
     return
   }
-  showApply.value = true
-  await nextTick()
-  applyRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  router.push(applyPath())
 }
 
 async function shareProject() {
@@ -223,67 +239,6 @@ async function shareProject() {
     window.alert('任务链接已复制')
   } catch {
     window.prompt('复制任务链接：', url)
-  }
-}
-
-async function uploadPdf(file: File): Promise<string> {
-  const fd = new FormData()
-  fd.append('file', file)
-  const { data } = await api.post<{ url: string }>('/uploads/pdf', fd)
-  return data.url
-}
-
-async function apply() {
-  if (!auth.canApplyProjects) {
-    applyError.value = '组织侧账号不能申请项目'
-    toast.value?.show(applyError.value, 'err')
-    return
-  }
-  if (!auth.isLoggedIn) {
-    router.push({ name: 'login', query: { redirect: route.fullPath, role: 'student' } })
-    return
-  }
-  applyError.value = ''
-  applyOk.value = ''
-  if (!resumeFile.value || !designFile.value) {
-    applyError.value = '请上传个人简历 PDF 与项目设计 PDF'
-    toast.value?.show(applyError.value, 'err')
-    return
-  }
-  if (!resumeFile.value.name.toLowerCase().endsWith('.pdf') || !designFile.value.name.toLowerCase().endsWith('.pdf')) {
-    applyError.value = '简历与项目设计均须为 PDF'
-    toast.value?.show(applyError.value, 'err')
-    return
-  }
-  submitting.value = true
-  try {
-    resumeUrl.value = await uploadPdf(resumeFile.value)
-    designUrl.value = await uploadPdf(designFile.value)
-    const { data } = await api.post<ApplicationOut>(
-      `/projects/${route.params.id}/applications`,
-      {
-        statement: statement.value || null,
-        attachment_url: resumeUrl.value,
-        extra_fields: {
-          resume_pdf: resumeUrl.value,
-          design_pdf: designUrl.value,
-        },
-        submit: submitNow.value,
-      },
-    )
-    applyOk.value = `申请已提交（#${data.id}）。可在个人中心查看进度。`
-    toast.value?.show('申请提交成功', 'ok')
-    myApp.value = data
-    showApply.value = false
-    setTimeout(() => {
-      seedMyProjectTrail()
-      router.push(`/student/applications/${data.id}?tab=task`)
-    }, 600)
-  } catch (e: unknown) {
-    applyError.value = e instanceof Error ? e.message : '申请失败'
-    toast.value?.show(applyError.value, 'err')
-  } finally {
-    submitting.value = false
   }
 }
 
@@ -344,12 +299,12 @@ watch(() => route.params.id, load)
             <div class="ospp-info-lab">项目热度</div>
           </div>
           <div class="ospp-info-cell">
-            <div class="ospp-info-val">{{ brief.mentor_name || '社区导师' }}</div>
+            <div class="ospp-info-val">{{ project.mentor_name || brief.mentor_name || '社区导师' }}</div>
             <div class="ospp-info-lab">导师</div>
           </div>
           <div class="ospp-info-cell">
             <div class="ospp-info-val ospp-mail">
-              <a v-if="brief.mentor_email" :href="`mailto:${brief.mentor_email}`">{{ brief.mentor_email }}</a>
+              <a v-if="project.mentor_email || brief.mentor_email" :href="`mailto:${project.mentor_email || brief.mentor_email}`">{{ project.mentor_email || brief.mentor_email }}</a>
               <span v-else>—</span>
             </div>
             <div class="ospp-info-lab">导师联系邮箱</div>
@@ -506,13 +461,39 @@ watch(() => route.params.id, load)
         <!-- 底部操作：学生可申请；导师/组织侧不展示申请 -->
         <div class="ospp-btns">
           <template v-if="canApply">
+            <template v-if="myApp && !canReapply">
+              <RouterLink
+                class="ospp-btn"
+                :to="`/student/applications/${myApp.id}?tab=task`"
+                @click="seedMyProjectTrail"
+              >
+                查看任务进度
+              </RouterLink>
+              <button
+                v-if="myDesignPdf"
+                class="ospp-btn ghost"
+                type="button"
+                @click="openDesignPdf"
+              >
+                查看申请书
+              </button>
+            </template>
             <button
-              v-if="canOpenApply"
+              v-else-if="canOpenApply"
               class="ospp-btn"
               type="button"
               @click="openApply"
             >
               {{ canReapply ? '再次申请' : '申请接取' }}
+            </button>
+            <button
+              v-else-if="activeTask"
+              class="ospp-btn"
+              type="button"
+              disabled
+              :title="`正在进行「${activeTask.project_title || '另一个任务'}」，结束前不能再接`"
+            >
+              手头任务未结束
             </button>
             <template v-else-if="myApp">
               <RouterLink
@@ -560,42 +541,6 @@ watch(() => route.params.id, load)
           </template>
           <button class="ospp-btn" type="button" @click="shareProject">项目分享</button>
         </div>
-
-        <section v-if="showApply && canApply && (!myApp || canReapply)" ref="applyRef" class="ospp-apply">
-          <h2>填写申请书</h2>
-          <p class="ospp-apply-tip">提交后进入导师 → 社区 → 组委会三级审核。附件统一为 PDF。</p>
-          <form class="form wide" @submit.prevent="apply">
-            <label>
-              申请陈述 <span class="muted" style="font-weight: 400">（选填）</span>
-              <textarea
-                v-model="statement"
-                rows="5"
-                placeholder="可选：补充背景、方案、里程碑与时间安排"
-              />
-            </label>
-            <PdfDropZone v-model="resumeFile" label="个人简历（PDF）" required />
-            <PdfDropZone v-model="designFile" label="项目设计（PDF）" required />
-            <p class="ospp-template-line">
-              <span class="ospp-q">?</span>
-              没有模板？
-              <a href="/samples/project-design-template.pdf" download="项目申请书示例.pdf"
-                >下载项目申请书示例 PDF</a
-              >
-            </p>
-            <label class="row-check">
-              <input v-model="submitNow" type="checkbox" />
-              立即提交审核
-            </label>
-            <p v-if="applyError" class="error">{{ applyError }}</p>
-            <p v-if="applyOk" class="success-msg">{{ applyOk }}</p>
-            <div class="ospp-apply-actions">
-              <button class="ospp-btn" type="submit" :disabled="submitting">
-                {{ submitting ? '提交中…' : '确认提交' }}
-              </button>
-              <button class="ospp-btn ghost" type="button" @click="showApply = false">取消</button>
-            </div>
-          </form>
-        </section>
       </template>
     </div>
 

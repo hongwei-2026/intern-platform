@@ -35,7 +35,7 @@ defineExpose({ show })
   top: 72px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 2000;
+  z-index: 4000;
   min-width: 220px;
   max-width: min(520px, 92vw);
   padding: 0.75rem 1.1rem;

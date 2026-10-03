@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from intern_platform.db.session import get_db
@@ -12,8 +14,14 @@ from intern_platform.dependencies.ledger import (
     get_ledger_context,
     require_idempotency_key,
 )
+from intern_platform.models.application import Application
+from intern_platform.models.application_message import ApplicationMessage
+from intern_platform.models.project import Project
+from intern_platform.models.role import Role, UserRole
+from intern_platform.models.user import User
 from intern_platform.schemas.application import TransitionRequest, TransitionResponse
-from intern_platform.schemas.business import ApplicationOut, ApplicationUpdate
+from intern_platform.schemas.business import ApplicationOut, ApplicationUpdate, RewardDecision
+from intern_platform.services.message_service import MessageService
 from intern_platform.services.application_presenters import application_to_out
 from intern_platform.services.application_service import ApplicationService
 from intern_platform.services.application_workflow import (
@@ -21,10 +29,25 @@ from intern_platform.services.application_workflow import (
     OptimisticLockError,
     TransitionContext,
 )
+from intern_platform.services.message_codec import unpack_deliverable
 from intern_platform.services.notification_service import NotificationService
 from intern_platform.services.state_machine import IllegalTransitionError
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+
+
+class CommunityFinalBody(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    report_url: str | None = None
+    code_url: str | None = None
+
+
+class MentorNoticeBody(BaseModel):
+    mentor_id: int
+    project_id: int
+    note: str = Field(min_length=1, max_length=2000)
 
 
 def _notify_party(*, user_id: int, title: str, body: str, kind: str, project_id: int | None, application_id: int, db: Session) -> None:
@@ -58,6 +81,101 @@ def inbox_applications(
         raise HTTPException(status_code=403, detail="仅组织端角色可查看待审队列")
     rows = ApplicationService(db).list_inbox(auth)
     return [application_to_out(r) for r in rows]
+
+
+class RewardInboxItem(BaseModel):
+    application_id: int
+    project_title: str
+    student_name: str | None = None
+    body: str
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    created_at: str | None = None
+    decision: str = "pending"
+    decision_note: str | None = None
+
+
+class RewardInboxOut(BaseModel):
+    years: list[int]
+    items: list[RewardInboxItem]
+
+
+@router.get("/rewards/inbox", response_model=RewardInboxOut)
+def reward_inbox(
+    year: int | None = Query(default=None, ge=2000, le=2100),
+    q: str = "",
+    status_filter: str = Query(default="pending", alias="status", pattern="^(all|pending|approved|rejected)$"),
+    auth: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RewardInboxOut:
+    """学生奖励申请只给所属社区管理员，组委会不接收。"""
+    cids = auth.community_ids_for("community_admin")
+    if not cids:
+        raise HTTPException(status_code=403, detail="仅社区管理员可查看奖励申请")
+    keyword = q.strip().lower()
+    apps = db.execute(
+        select(Application, Project, User)
+        .join(Project, Project.id == Application.project_id)
+        .join(User, User.id == Application.student_id)
+        .where(Project.community_id.in_(cids))
+    ).all()
+    found: list[RewardInboxItem] = []
+    years: set[int] = set()
+    for app, project, student in apps:
+        messages = db.scalars(
+            select(ApplicationMessage)
+            .where(ApplicationMessage.application_id == app.id)
+            .order_by(ApplicationMessage.id.desc())
+        ).all()
+        for msg in messages:
+            parsed = unpack_deliverable(msg.body)
+            if parsed.get("kind") != "reward":
+                continue
+            created = getattr(msg, "created_at", None)
+            created_year = created.year if created is not None else None
+            if created_year:
+                years.add(created_year)
+            decision = str(parsed.get("decision") or "pending")
+            item = RewardInboxItem(
+                application_id=app.id,
+                project_title=project.title,
+                student_name=student.display_name,
+                body=str(parsed.get("text") or ""),
+                attachment_url=str(parsed.get("attachment_url") or "") or None,
+                attachment_name=str(parsed.get("attachment_name") or "") or None,
+                created_at=created.isoformat(sep=" ", timespec="minutes") if created else None,
+                decision=decision,
+                decision_note=str(parsed.get("decision_note") or "") or None,
+            )
+            if year is not None and created_year != year:
+                break
+            if status_filter != "all" and decision != status_filter:
+                break
+            hay = f"{item.student_name or ''} {item.project_title} {item.body}".lower()
+            if keyword and keyword not in hay:
+                break
+            found.append(item)
+            break
+    found.sort(key=lambda row: row.created_at or "", reverse=True)
+    return RewardInboxOut(years=sorted(years, reverse=True), items=found)
+
+
+@router.post("/{application_id}/reward-decision")
+def reward_decision(
+    application_id: int,
+    body: RewardDecision,
+    auth: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        MessageService(db).decide_reward(auth, application_id, body.decision, body.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.get("/{application_id}", response_model=ApplicationOut)
@@ -157,6 +275,128 @@ def start_progress(
         idempotent_replay=result.idempotent_replay,
         version=result.application.version,
     )
+
+
+@router.post("/{application_id}/community-final", response_model=TransitionResponse)
+def submit_community_final(
+    application_id: int,
+    body: CommunityFinalBody,
+    auth: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
+) -> TransitionResponse:
+    """导师通过结项后，社区把材料说明交给组委会。"""
+    key = require_idempotency_key(ledger.idempotency_key)
+    app = ApplicationService(db).get(application_id)
+    if app is None or app.project is None:
+        raise HTTPException(status_code=404, detail="申请不存在")
+    if not auth.has_community_role("community_admin", app.project.community_id):
+        raise HTTPException(status_code=403, detail="仅本社区管理员可提交结项材料")
+    if app.status != "community_final_review":
+        raise HTTPException(status_code=409, detail="当前不在社区报送环节")
+    lines = [body.note.strip()]
+    if body.attachment_url:
+        lines.append(f"交付件：{body.attachment_name or '材料'} {body.attachment_url}")
+    if body.report_url:
+        lines.append(f"设计文档：{body.report_url}")
+    if body.code_url:
+        lines.append(f"代码链接：{body.code_url}")
+    comment = "\n".join(lines)
+    ctx = TransitionContext(
+        actor_id=auth.id,
+        action="submit_community_final",
+        actor_role="community_admin",
+        comment=comment,
+        request_id=ledger.request_id,
+        correlation_id=ledger.request_id,
+        idempotency_key=key,
+        trace_id=ledger.trace_id,
+        ip=ledger.ip,
+        user_agent=ledger.user_agent,
+    )
+    workflow = ApplicationWorkflowService(db)
+    from_status = app.status
+    try:
+        mid = workflow.transition_by_id(application_id, ctx, commit=False)
+        # 社区报送后组委会直接接收并完成结项，不再单独终审一次
+        result = workflow.transition(
+            mid.application,
+            TransitionContext(
+                actor_id=auth.id,
+                action="approve_committee_final",
+                actor_role="community_admin",
+                comment="社区报送后自动计入组委会结项名单",
+                request_id=ledger.request_id,
+                correlation_id=ledger.request_id,
+                idempotency_key=f"{key}#auto_committee",
+                trace_id=ledger.trace_id,
+                ip=ledger.ip,
+                user_agent=ledger.user_agent,
+                expected_version=mid.application.version,
+            ),
+        )
+    except IllegalTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OptimisticLockError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    title = app.project.title
+    NotificationService(db).create(
+        user_id=app.student_id,
+        title="结项已完成",
+        body=f"项目「{title}」社区已报送，组委会已自动接收，状态为已结项。",
+        kind="review_progress",
+        project_id=app.project_id,
+        application_id=app.id,
+    )
+    committee_role = db.scalar(select(Role).where(Role.code == "committee"))
+    if committee_role is not None:
+        user_ids = db.scalars(
+            select(UserRole.user_id).where(UserRole.role_id == committee_role.id)
+        ).all()
+        for uid in user_ids:
+            NotificationService(db).create(
+                user_id=uid,
+                title="社区已报送结项，已自动接收",
+                body=f"「{title}」申请 #{app.id} 已计入结项名单：{comment[:140]}",
+                kind="community_final",
+                project_id=app.project_id,
+                application_id=app.id,
+            )
+    db.commit()
+    return TransitionResponse(
+        application_id=result.application.id,
+        from_status=from_status,
+        to_status=result.to_status,
+        action=result.action,
+        idempotent_replay=result.idempotent_replay,
+        version=result.application.version,
+    )
+
+
+@router.post("/notices/mentor")
+def notice_mentor(
+    body: MentorNoticeBody,
+    auth: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    from intern_platform.models.project import Project
+
+    project = db.get(Project, body.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if not auth.has_community_role("community_admin", project.community_id):
+        raise HTTPException(status_code=403, detail="仅本社区管理员可通知导师")
+    if project.mentor_id != body.mentor_id:
+        raise HTTPException(status_code=400, detail="该导师不是此项目负责人")
+    NotificationService(db).create(
+        user_id=body.mentor_id,
+        title="社区重要通知",
+        body=f"「{project.title}」{body.note[:180]}",
+        kind="community_mentor",
+        project_id=project.id,
+        commit=True,
+    )
+    return {"ok": True}
 
 
 @router.post("/{application_id}/withdraw", response_model=TransitionResponse)

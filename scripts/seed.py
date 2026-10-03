@@ -221,6 +221,93 @@ def _upsert_first_project(
     return proj
 
 
+def _upsert_named_user(session, *, email: str, display_name: str, school: str, password_hash: str) -> User:
+    user = session.scalar(select(User).where(User.email == email))
+    if user is None:
+        user = User(
+            email=email,
+            password_hash=password_hash,
+            display_name=display_name,
+            school=school,
+            auth_provider="local",
+        )
+        session.add(user)
+        session.flush()
+    else:
+        # 已有账号只补资料，绝不覆盖本人密码
+        user.display_name = display_name
+        user.school = school or user.school
+    return user
+
+
+def _seed_accounts(session, role_by_code: dict[str, Role], password_hash: str) -> None:
+    """每个已通过社区一名组织账号、一名导师；另补几名学生供联调。"""
+    school = "华中科技大学"
+    communities = [
+        ("mirror", "陈敏", "赵岩"),
+        ("docs", "苏晚", "何宁"),
+        ("devtools", "马川", "李舟"),
+        ("ai-lab", "顾清", "江衡"),
+        ("openeuler", "许喆", "韩放"),
+        ("opengauss", "邓可", "曹宁"),
+        ("mindspore", "叶安", "潘澄"),
+        ("rtthread", "吴边", "高牧"),
+    ]
+    for slug, org_name, mentor_name in communities:
+        community = session.scalar(select(Community).where(Community.slug == slug))
+        if community is None:
+            continue
+        org = _upsert_named_user(
+            session,
+            email=f"{slug}.admin@demo.hust.edu.cn",
+            display_name=org_name,
+            school=school,
+            password_hash=password_hash,
+        )
+        mentor = _upsert_named_user(
+            session,
+            email=f"{slug}.mentor@demo.hust.edu.cn",
+            display_name=mentor_name,
+            school=school,
+            password_hash=password_hash,
+        )
+        _ensure_role_binding(
+            session, user_id=org.id, role=role_by_code["community_admin"], community_id=community.id
+        )
+        _ensure_role_binding(
+            session, user_id=mentor.id, role=role_by_code["mentor"], community_id=community.id
+        )
+        for project in session.scalars(select(Project).where(Project.community_id == community.id)).all():
+            project.mentor_id = mentor.id
+
+    for email, name in (
+        ("mentor2@demo.hust.edu.cn", "周衡"),
+        ("mentor3@test.local", "沈清"),
+    ):
+        extra = session.scalar(select(User).where(User.email == email))
+        if extra is None:
+            continue
+        extra.display_name = name
+        extra.school = school
+        extra.password_hash = password_hash
+
+    for email, name in (
+        ("linxia@demo.hust.edu.cn", "林夏"),
+        ("zhouqi@demo.hust.edu.cn", "周琪"),
+        ("chenrui@demo.hust.edu.cn", "陈睿"),
+    ):
+        student = _upsert_named_user(
+            session,
+            email=email,
+            display_name=name,
+            school=school,
+            password_hash=password_hash,
+        )
+        _ensure_role_binding(
+            session, user_id=student.id, role=role_by_code["student"], community_id=None
+        )
+
+
 def seed() -> None:
     password_hash = pwd_context.hash(DEMO_PASSWORD)
     session = SessionLocal()
@@ -534,6 +621,8 @@ def seed() -> None:
             select(Community).where(Community.slug.like("smoke-%"))
         ).all():
             smoke.status = "rejected"
+
+        _seed_accounts(session, role_by_code, password_hash)
 
         for key, value in INTEGRATION_DEFAULTS.items():
             existing = session.get(IntegrationSetting, key)

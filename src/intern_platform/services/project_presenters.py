@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from intern_platform.models.application import Application
 from intern_platform.models.project import Project
+from intern_platform.models.user import User
 from intern_platform.schemas.business import ProjectAssigneeOut, ProjectOut
 
 # 占用名额：导师通过之后即预留（含待社区/组委会），避免他人不知满员还做材料
@@ -75,6 +76,14 @@ def _split_rows(rows: list[Application]) -> tuple[list[ProjectAssigneeOut], list
     return assignees, reviewing
 
 
+def _with_mentor(out: ProjectOut, mentor: User | None) -> ProjectOut:
+    if mentor is None:
+        return out
+    return out.model_copy(
+        update={"mentor_name": mentor.display_name, "mentor_email": mentor.email}
+    )
+
+
 def _enrich(project: Project, rows: list[Application]) -> ProjectOut:
     assignees, reviewing = _split_rows(rows)
     taken = len(assignees)
@@ -102,7 +111,8 @@ def project_to_out(session: Session, project: Project) -> ProjectOut:
         .order_by(Application.id.asc())
     )
     rows = list(session.scalars(stmt).unique().all())
-    return _enrich(project, rows)
+    mentor = session.get(User, project.mentor_id)
+    return _with_mentor(_enrich(project, rows), mentor)
 
 
 def projects_to_out(session: Session, projects: list[Project]) -> list[ProjectOut]:
@@ -121,5 +131,12 @@ def projects_to_out(session: Session, projects: list[Project]) -> list[ProjectOu
     by_project: dict[int, list[Application]] = {pid: [] for pid in ids}
     for a in session.scalars(stmt).unique().all():
         by_project.setdefault(a.project_id, []).append(a)
-
-    return [_enrich(project, by_project.get(project.id, [])) for project in projects]
+    mentor_ids = {project.mentor_id for project in projects}
+    mentors = {
+        user.id: user
+        for user in session.scalars(select(User).where(User.id.in_(mentor_ids))).all()
+    }
+    return [
+        _with_mentor(_enrich(project, by_project.get(project.id, [])), mentors.get(project.mentor_id))
+        for project in projects
+    ]

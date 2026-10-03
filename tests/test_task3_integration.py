@@ -188,8 +188,9 @@ def test_full_path_draft_to_completed_writes_ledger(client_and_db) -> None:
         return resp.json()
 
     review(mentor)
-    review(admin)
-    review(committee)
+    # 社区通过后组委会自动接收中选，不必再审一次
+    selected = review(admin)
+    assert selected["to_status"] == "selected"
 
     r = client.post(
         f"/api/v1/applications/{app_id}/start-progress",
@@ -218,11 +219,13 @@ def test_full_path_draft_to_completed_writes_ledger(client_and_db) -> None:
         json={"decision": "approve"},
     )
     assert r.status_code == 200, r.text
+    assert r.json()["to_status"] == "community_final_review"
 
+    # 导师通过后进社区报送；社区提交后组委会自动接收并完成结项
     r = client.post(
-        f"/api/v1/applications/{app_id}/final/reviews",
-        headers={**_auth(committee), "X-Idempotency-Key": _idem()},
-        json={"decision": "approve"},
+        f"/api/v1/applications/{app_id}/community-final",
+        headers={**_auth(admin), "X-Idempotency-Key": _idem()},
+        json={"note": "社区已核对材料，报送组委会"},
     )
     assert r.status_code == 200, r.text
     assert r.json()["to_status"] == "completed"

@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from intern_platform.models.notification import Notification
+from intern_platform.models.role import Role, UserRole
 from intern_platform.models.user import User
 from intern_platform.schemas.notification import NotificationListOut, NotificationOut
 from intern_platform.services.mail_service import send_reject_mail
@@ -75,6 +76,16 @@ class NotificationService:
         self.session.commit()
         return len(rows)
 
+    def notify_students(self, *, title: str, body: str | None, kind: str) -> int:
+        """给全部学生发同一条站内通知。调用方负责提交事务。"""
+        role = self.session.scalar(select(Role).where(Role.code == "student"))
+        if role is None:
+            return 0
+        user_ids = set(self.session.scalars(select(UserRole.user_id).where(UserRole.role_id == role.id)).all())
+        for user_id in user_ids:
+            self.create(user_id=user_id, title=title, body=body, kind=kind)
+        return len(user_ids)
+
     def notify_review_result(
         self,
         *,
@@ -115,7 +126,12 @@ class NotificationService:
             "rejected": "未通过",
             "withdrawn": "已放弃/取消接取",
             "in_progress": "开发中",
-            "completed": "已结项",
+            "final_submitted": "已提交验收",
+            "mentor_final_review": "导师验收中",
+            "community_final_review": "导师已通过验收，待社区报送组委会",
+            "committee_final_review": "组委会已接收结项",
+            "final_rejected": "验收失败",
+            "completed": "已结项（社区报送后组委会已自动接收）",
         }.get(to_status, to_status)
         title = f"审核有进展：{project_title}"
         body = f"项目「{project_title}」申请进度更新为：{status_zh}。"

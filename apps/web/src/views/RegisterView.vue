@@ -32,7 +32,7 @@ async function onSubmit() {
   <div class="page narrow">
     <div class="auth-panel">
       <h1 class="page-title" style="font-size: 1.35rem">注册学生账号</h1>
-      <p class="page-desc">默认注册为学生角色。导师 / 社区 / 组委会角色由组委会赋权或使用演示账号。</p>
+      <p class="page-desc">注册后为学生。导师请使用社区发放的邀请码注册，组织账号由组委会开通。</p>
       <form class="form" @submit.prevent="onSubmit">
         <label>
           邮箱

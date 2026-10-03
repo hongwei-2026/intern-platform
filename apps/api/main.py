@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from intern_platform.api.routes import api_router
 from intern_platform.config import get_settings
 from intern_platform.dependencies.ledger import build_ledger_context
+from intern_platform.services.db_backup import start_backup_loop
 
 
 class LedgerContextMiddleware(BaseHTTPMiddleware):
@@ -35,6 +36,8 @@ def create_app() -> FastAPI:
         description="华科开源原子 · 开源实习管理系统 API",
         version="0.1.0",
     )
+    if "pytest" not in __import__("sys").modules:
+        start_backup_loop()
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,

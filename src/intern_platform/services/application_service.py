@@ -24,6 +24,35 @@ class ApplicationService:
         self.session = session
         self.workflow = ApplicationWorkflowService(session)
 
+    # 接取之后、任务结束之前，不能再接另一个。结束包括：未通过、已放弃、验收通过、已结项。
+    _OPEN_TASK = (
+        "submitted",
+        "mentor_review",
+        "community_review",
+        "committee_review",
+        "selected",
+        "in_progress",
+        "final_submitted",
+        "mentor_final_review",
+        "final_rejected",
+    )
+
+    def _assert_no_open_task(self, student_id: int, project_id: int) -> None:
+        other = self.session.scalar(
+            select(Application).where(
+                Application.student_id == student_id,
+                Application.project_id != project_id,
+                Application.status.in_(self._OPEN_TASK),
+            )
+        )
+        if other is None:
+            return
+        title = "另一个任务"
+        project = other.project or self.session.get(Project, other.project_id)
+        if project is not None and project.title:
+            title = project.title
+        raise ValueError(f"你正在进行「{title}」，这个任务结束前不能再接取其他任务。")
+
     def _extension_for_project(self, project: Project) -> CommunityExtension | None:
         return self.session.scalar(
             select(CommunityExtension).where(
@@ -46,6 +75,8 @@ class ApplicationService:
             raise ValueError("项目未上线，不可申请")
         if auth.has_role("mentor", "community_admin", "committee"):
             raise PermissionError("组织侧账号（导师/社区/组委会）不可申请项目，请使用学生账号")
+
+        self._assert_no_open_task(auth.id, project_id)
 
         # 导师通过后即预留名额；满员则禁止新申请，避免白做材料
         taken = seat_taken_count(self.session, project_id)
@@ -193,7 +224,9 @@ class ApplicationService:
             has_global = any(
                 r.code == "community_admin" and r.community_id is None for r in auth.roles
             )
-            stmt = stmt.where(Application.status == "community_review")
+            stmt = stmt.where(
+                Application.status.in_(("community_review", "community_final_review"))
+            )
             if community_ids and not has_global:
                 stmt = stmt.where(Project.community_id.in_(community_ids))
             elif not community_ids and not has_global:
@@ -308,6 +341,7 @@ class ApplicationService:
             raise LookupError("申请不存在")
         if app.student_id != auth.id:
             raise PermissionError("仅本人可提交")
+        self._assert_no_open_task(auth.id, app.project_id)
         project = self.session.get(Project, app.project_id)
         assert project is not None
         ext = self._extension_for_project(project)

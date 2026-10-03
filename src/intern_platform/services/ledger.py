@@ -55,10 +55,22 @@ def next_seq_review(session: Session, application_id: int) -> int:
     return int(current or 0) + 1
 
 
+def next_audit_link(session: Session) -> tuple[int, str]:
+    """一次读出最新序号和哈希，登录等热路径不再查两遍。"""
+    row = session.execute(
+        select(AuditLog.seq_no, AuditLog.event_hash)
+        .order_by(AuditLog.seq_no.desc())
+        .limit(1)
+    ).first()
+    if row is None or row[0] is None:
+        return 1, GENESIS_HASH
+    return int(row[0]) + 1, row[1] or GENESIS_HASH
+
+
 def next_seq_audit(session: Session) -> int:
     """全局单调递增序号（事务内 max+1）。"""
-    current = session.scalar(select(func.max(AuditLog.seq_no)))
-    return int(current or 0) + 1
+    seq_no, _prev = next_audit_link(session)
+    return seq_no
 
 
 def next_seq_workflow(session: Session, aggregate_type: str, aggregate_id: str) -> int:
@@ -72,9 +84,8 @@ def next_seq_workflow(session: Session, aggregate_type: str, aggregate_id: str) 
 
 
 def get_prev_hash_audit(session: Session) -> str:
-    stmt = select(AuditLog.event_hash).order_by(AuditLog.seq_no.desc()).limit(1)
-    prev = session.scalar(stmt)
-    return prev if prev else GENESIS_HASH
+    _seq, prev = next_audit_link(session)
+    return prev
 
 
 def get_prev_hash_workflow(
@@ -222,6 +233,7 @@ __all__ = [
     "get_prev_hash_audit",
     "get_prev_hash_workflow",
     "iso_ts",
+    "next_audit_link",
     "next_seq_audit",
     "next_seq_review",
     "next_seq_workflow",

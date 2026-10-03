@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +15,7 @@ from intern_platform.dependencies.auth import (
     hash_password,
     load_user_roles,
     roles_payload,
+    user_is_disabled,
     verify_password,
 )
 from intern_platform.dependencies.ledger import LedgerRequestContext
@@ -66,6 +70,18 @@ def user_to_out(user: User, roles: list | None = None) -> UserOut:
         auth_provider=user.auth_provider,
         roles=[RoleOut(code=b.code, community_id=b.community_id) for b in bindings],
     )
+
+
+_login_fails: dict[str, list[float]] = defaultdict(list)
+_LOGIN_WINDOW_SECONDS = 600
+_LOGIN_MAX_FAILS = 8
+
+
+def _login_locked(email: str) -> bool:
+    now = time.monotonic()
+    recent = [stamp for stamp in _login_fails.get(email, []) if now - stamp < _LOGIN_WINDOW_SECONDS]
+    _login_fails[email] = recent
+    return len(recent) >= _LOGIN_MAX_FAILS
 
 
 class AuthService:
@@ -127,6 +143,9 @@ class AuthService:
             raise ValueError("邮箱格式不正确")
         existing = self.session.scalar(select(User).where(User.email == email_n))
         if existing:
+            from intern_platform.services.community_service import CommunityService
+
+            CommunityService(self.session)._assert_role_compatible(existing.id, "mentor")
             raise ValueError("邮箱已注册，请直接登录；若需加入社区，请联系社区管理员")
 
         svc = CommunityService(self.session)
@@ -180,8 +199,12 @@ class AuthService:
 
     def login(self, body: LoginRequest, ledger: LedgerRequestContext) -> TokenResponse:
         email = body.email.strip().lower()
+        if _login_locked(email):
+            raise PermissionError("尝试次数过多，请十分钟后再试")
         user = self.session.scalar(select(User).where(User.email == email))
         ok = user is not None and verify_password(body.password, user.password_hash)
+        if ok and user is not None and user_is_disabled(self.session, user.id):
+            raise PermissionError("账号已停用，请联系组委会")
         if not ok:
             self.audits.create(
                 actor_id=user.id if user else None,
@@ -196,6 +219,7 @@ class AuthService:
                 user_agent=ledger.user_agent,
             )
             self.session.commit()
+            _login_fails.setdefault(email, []).append(time.monotonic())
             raise PermissionError("邮箱或密码错误")
 
         bindings = load_user_roles(self.session, user.id)
@@ -217,6 +241,7 @@ class AuthService:
             user_agent=ledger.user_agent,
         )
         self.session.commit()
+        _login_fails.pop(email, None)
         return TokenResponse(access_token=token, user=user_to_out(user, bindings))
 
     def update_me(self, auth: AuthUser, body: UserUpdateRequest) -> UserOut:
@@ -230,6 +255,8 @@ class AuthService:
         return user_to_out(user, bindings)
 
     def change_password(self, auth: AuthUser, body: ChangePasswordRequest) -> None:
+        if auth.has_role("community_admin"):
+            raise PermissionError("组织账号由组委会发放，不能修改密码")
         user = auth.user
         if not verify_password(body.old_password, user.password_hash):
             raise PermissionError("原密码不正确")

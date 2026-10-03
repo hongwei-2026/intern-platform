@@ -2627,11 +2627,38 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  width: 100%;
   padding: 0.75rem 0.85rem;
+  border: 0;
   border-bottom: 1px solid #f8fafc;
+  background: transparent;
+  text-align: left;
   text-decoration: none;
   color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
+.note-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.note-sheet {
+  width: min(460px, 100%);
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px 18px 18px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+}
+.note-sheet header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.note-sheet p { margin: 12px 0 16px; white-space: pre-wrap; line-height: 1.7; color: #334155; }
+.note-sheet .x { border: 0; background: transparent; font-size: 1.3rem; cursor: pointer; color: #64748b; }
+.note-sheet .jump { color: #1677ff; font-weight: 700; text-decoration: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
 
 .notify-item:hover {
   background: #f8fafc;

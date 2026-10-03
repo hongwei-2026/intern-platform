@@ -7,12 +7,22 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from intern_platform.config import PROJECT_ROOT
-from intern_platform.dependencies.auth import AuthUser, get_current_user
+from intern_platform.db.session import get_db
+from intern_platform.dependencies.auth import (
+    AuthUser,
+    _bearer,
+    decode_token,
+    get_current_user,
+    load_user_roles,
+)
+from intern_platform.models.user import User
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -21,8 +31,12 @@ UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_PDF_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_ZIP_BYTES = 100 * 1024 * 1024
+MAX_VIDEO_BYTES = 40 * 1024 * 1024
+MAX_FILE_BYTES = 20 * 1024 * 1024
+FILE_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".zip"}
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+PUBLIC_MEDIA = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm")
 IMAGE_MAGIC = (
     (b"\xff\xd8\xff", ".jpg"),
     (b"\x89PNG\r\n\x1a\n", ".png"),
@@ -108,6 +122,46 @@ async def upload_image(
     return UploadOut(url=rel, filename=file.filename or stored, size=len(raw))
 
 
+@router.post("/video", response_model=UploadOut)
+async def upload_video(
+    file: UploadFile = File(...),
+    auth: AuthUser = Depends(get_current_user),
+) -> UploadOut:
+    raw = await file.read()
+    name = (file.filename or "").lower()
+    if not name.endswith((".mp4", ".webm")):
+        raise HTTPException(status_code=400, detail="仅支持 MP4 / WebM")
+    if len(raw) > MAX_VIDEO_BYTES:
+        raise HTTPException(status_code=400, detail="视频不能超过 40MB")
+    ext = ".webm" if name.endswith(".webm") else ".mp4"
+    user_dir = UPLOAD_ROOT / f"u{auth.id}"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex[:12]}_video{ext}"
+    (user_dir / stored).write_bytes(raw)
+    return UploadOut(url=f"/api/v1/uploads/files/u{auth.id}/{stored}", filename=file.filename or stored, size=len(raw))
+
+
+@router.post("/file", response_model=UploadOut)
+async def upload_file(
+    file: UploadFile = File(...),
+    auth: AuthUser = Depends(get_current_user),
+) -> UploadOut:
+    name = file.filename or ""
+    ext = Path(name).suffix.lower()
+    if ext not in FILE_EXTS:
+        raise HTTPException(status_code=400, detail="仅支持 PDF、Word、Excel、PPT、TXT、CSV、ZIP")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=400, detail="文件不能超过 20MB")
+    user_dir = UPLOAD_ROOT / f"u{auth.id}"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex[:12]}_{_safe_name(name, force_ext=ext)}"
+    (user_dir / stored).write_bytes(raw)
+    return UploadOut(url=f"/api/v1/uploads/files/u{auth.id}/{stored}", filename=name or stored, size=len(raw))
+
+
 @router.post("/zip", response_model=UploadOut)
 async def upload_zip(
     file: UploadFile = File(...),
@@ -139,39 +193,81 @@ async def upload_zip(
 
 
 @router.get("/files/{user_part}/{filename}")
-def get_uploaded_file(user_part: str, filename: str) -> FileResponse:
+def get_uploaded_file(
+    user_part: str,
+    filename: str,
+    access_token: str | None = Query(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> FileResponse:
     if not re.fullmatch(r"u\d+", user_part):
         raise HTTPException(status_code=404, detail="not found")
-    if "/" in filename or ".." in filename:
+    if "/" in filename or ".." in filename or "\\" in filename:
         raise HTTPException(status_code=404, detail="文件不存在")
-    path = UPLOAD_ROOT / user_part / filename
-    if not path.is_file():
+    path = (UPLOAD_ROOT / user_part / filename).resolve()
+    if UPLOAD_ROOT.resolve() not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    media = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     lower = filename.lower()
+    public_media = lower.endswith(PUBLIC_MEDIA)
+    if not public_media:
+        viewer = _viewer(db, credentials, access_token)
+        if viewer is None:
+            raise HTTPException(status_code=401, detail="请先登录后再下载")
+        owner_id = int(user_part[1:])
+        staff = viewer.has_role("mentor", "community_admin", "committee")
+        if viewer.id != owner_id and not staff:
+            raise HTTPException(status_code=403, detail="无权下载该文件")
+
+    media = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     disposition = "inline"
-    if lower.endswith(".pdf"):
-        media = "application/pdf"
-    elif lower.endswith((".jpg", ".jpeg")):
-        media = "image/jpeg"
-    elif lower.endswith(".png"):
-        media = "image/png"
-    elif lower.endswith(".webp"):
-        media = "image/webp"
-    elif lower.endswith(".gif"):
-        media = "image/gif"
-    elif lower.endswith(".zip"):
-        media = "application/zip"
+    if lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm")):
+        if lower.endswith((".jpg", ".jpeg")):
+            media = "image/jpeg"
+        elif lower.endswith(".png"):
+            media = "image/png"
+        elif lower.endswith(".webp"):
+            media = "image/webp"
+        elif lower.endswith(".gif"):
+            media = "image/gif"
+    else:
+        if lower.endswith(".pdf"):
+            media = "application/pdf"
+        elif lower.endswith(".zip"):
+            media = "application/zip"
         disposition = "attachment"
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if public_media:
+        headers["Cache-Control"] = "public, max-age=3600"
+    else:
+        headers["Cache-Control"] = "private, no-store"
     return FileResponse(
         path,
         media_type=media,
         filename=filename,
         content_disposition_type=disposition,
-        headers={
-            "Cache-Control": "public, max-age=3600",
-            "X-Content-Type-Options": "nosniff",
-            "Access-Control-Allow-Origin": "*",
-        },
+        headers=headers,
     )
+
+
+def _viewer(
+    db: Session,
+    credentials: HTTPAuthorizationCredentials | None,
+    access_token: str | None,
+) -> AuthUser | None:
+    token = None
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        token = credentials.credentials
+    elif access_token:
+        token = access_token
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+        user_id = int(payload.get("sub"))
+    except Exception:
+        return None
+    user = db.get(User, user_id)
+    if user is None:
+        return None
+    return AuthUser(user=user, roles=load_user_roles(db, user.id))

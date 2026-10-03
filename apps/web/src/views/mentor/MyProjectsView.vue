@@ -2,12 +2,15 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import api from '@/api/client'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import type { ProjectOut } from '@/api/types'
 import { projectStatusLabel, statusTone } from '@/utils/statusLabel'
 
 const projects = ref<ProjectOut[]>([])
 const error = ref('')
 const busy = ref(false)
+const closeOpen = ref(false)
+const closeId = ref<number | null>(null)
 
 async function load() {
   error.value = ''
@@ -33,8 +36,15 @@ async function publish(id: number) {
 
 onMounted(load)
 
-async function closeTake(id: number) {
-  if (!window.confirm('关闭后不能再接取，项目介绍仍可查看。确定关闭？')) return
+function closeTake(id: number) {
+  closeId.value = id
+  closeOpen.value = true
+}
+
+async function confirmCloseTake() {
+  const id = closeId.value
+  closeId.value = null
+  if (!id) return
   busy.value = true
   try {
     await api.post(`/projects/${id}/close`)
@@ -49,6 +59,17 @@ async function closeTake(id: number) {
 
 <template>
   <div class="page wide">
+    <ConfirmDialog
+      :open="closeOpen"
+      title="关闭接取"
+      message="关闭后不能再接取，项目介绍仍可查看。确定关闭？"
+      confirm-text="关闭接取"
+      cancel-text="取消"
+      danger
+      @update:open="closeOpen = $event"
+      @cancel="closeId = null"
+      @confirm="confirmCloseTake"
+    />
     <header class="head">
       <div>
         <p class="eyebrow">导师工作台</p>

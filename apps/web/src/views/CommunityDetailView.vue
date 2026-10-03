@@ -70,6 +70,16 @@ function beforeOpenProject() {
   ])
 }
 
+const hasIntro = computed(() => {
+  const blocks = community.value?.intro_body?.blocks || []
+  return blocks.some((block) => {
+    if (block.type === 'paragraph' || block.type === 'heading') return !!(block.text && block.text.trim())
+    if (block.type === 'image' || block.type === 'video') return !!(block.url && String(block.url).trim())
+    if (block.type === 'table') return !!(block.headers?.length || block.rows?.length)
+    return false
+  })
+})
+
 function initialOf(name: string) {
   return (name || '?').trim().slice(0, 1).toUpperCase()
 }
@@ -106,78 +116,62 @@ watch(() => route.params.slug, load)
     <p v-else-if="error" class="error">{{ error }}</p>
 
     <template v-else-if="community">
-      <!-- 开源之夏风格：Logo + 名称 + 外链 + 简介 + 结构化信息 -->
       <header class="org-profile">
         <div class="org-logo" aria-hidden="true">
           <img v-if="community.logo_url" :src="community.logo_url" :alt="community.name" />
           <span v-else>{{ initialOf(community.name) }}</span>
         </div>
         <div class="org-body">
-          <h1>{{ community.name }}</h1>
-          <a
-            v-if="community.homepage_url"
-            class="official-link"
-            :href="community.homepage_url"
-            target="_blank"
-            rel="noopener"
-          >
-            官网主页：点击前往 ›
-          </a>
-          <p v-else class="official-miss">暂未填写官网主页</p>
-
+          <div class="org-title-row">
+            <h1>{{ community.name }}</h1>
+            <a
+              v-if="community.homepage_url"
+              class="official-link"
+              :href="community.homepage_url"
+              target="_blank"
+              rel="noopener"
+            >
+              官网主页
+            </a>
+          </div>
           <p class="org-desc">
             {{
               community.description ||
               '该社区暂未填写一句话简介。社区管理员可在组织工作台完善对外介绍。'
             }}
           </p>
-
-          <ul class="org-meta">
-            <li v-if="community.gitea_org_url || community.homepage_url">
-              <span class="ico ico-repo" aria-hidden="true"></span>
-              <div>
-                <em>主要仓库 / 组织地址</em>
-                <a
-                  :href="community.gitea_org_url || community.homepage_url || '#'"
-                  target="_blank"
-                  rel="noopener"
-                >{{ community.gitea_org_url || community.homepage_url }}</a>
-              </div>
-            </li>
-            <li v-if="community.mirror_doc_url">
-              <span class="ico ico-doc" aria-hidden="true"></span>
-              <div>
-                <em>文档 / 镜像</em>
-                <a :href="community.mirror_doc_url" target="_blank" rel="noopener">{{
-                  community.mirror_doc_url
-                }}</a>
-              </div>
-            </li>
-            <li v-if="community.tags?.length || domainGuess.length || langTags.length">
-              <span class="ico ico-field" aria-hidden="true"></span>
-              <div>
-                <em>社区标签</em>
-                <div class="tags">
-                  <span
-                    v-for="t in community.tags?.length ? community.tags : [...domainGuess, ...langTags].slice(0, 12)"
-                    :key="t"
-                    class="tag"
-                  >{{ t }}</span>
-                </div>
-              </div>
-            </li>
-            <li>
-              <span class="ico ico-task" aria-hidden="true"></span>
-              <div>
-                <em>可接取任务</em>
-                <strong class="num">{{ projects.length }}</strong>
-              </div>
-            </li>
-          </ul>
         </div>
+        <ul class="org-meta">
+          <li v-if="community.gitea_org_url || community.homepage_url">
+            <em>主要仓库 / 组织地址</em>
+            <a
+              :href="community.gitea_org_url || community.homepage_url || '#'"
+              target="_blank"
+              rel="noopener"
+            >{{ community.gitea_org_url || community.homepage_url }}</a>
+          </li>
+          <li v-if="community.mirror_doc_url">
+            <em>文档 / 镜像</em>
+            <a :href="community.mirror_doc_url" target="_blank" rel="noopener">{{ community.mirror_doc_url }}</a>
+          </li>
+          <li v-if="community.tags?.length || domainGuess.length || langTags.length">
+            <em>社区标签</em>
+            <div class="tags">
+              <span
+                v-for="t in community.tags?.length ? community.tags : [...domainGuess, ...langTags].slice(0, 12)"
+                :key="t"
+                class="tag"
+              >{{ t }}</span>
+            </div>
+          </li>
+          <li>
+            <em>可接取任务</em>
+            <strong class="num">{{ projects.length }}</strong>
+          </li>
+        </ul>
       </header>
 
-      <section class="intro-sec">
+      <section v-if="hasIntro" class="intro-sec">
         <h2>社区介绍</h2>
         <CommunityIntroView :body="community.intro_body" :fallback="null" />
       </section>
@@ -217,29 +211,33 @@ watch(() => route.params.slug, load)
 
 <style scoped>
 .ospp-org {
-  max-width: 920px;
+  width: min(1440px, 100%);
   margin: 0 auto;
-  padding: 28px 20px 72px;
+  padding: 20px clamp(16px, 3vw, 36px) 48px;
   background: #fff;
-  min-height: calc(100vh - var(--nav-h, 64px));
+  box-sizing: border-box;
 }
 .org-profile {
   display: grid;
-  grid-template-columns: 96px 1fr;
-  gap: 28px;
-  padding: 8px 0 36px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-areas:
+    "logo body"
+    "facts facts";
+  gap: 12px 18px;
+  padding: 8px 0 18px;
   border-bottom: 1px solid #f0f0f0;
 }
 .org-logo {
-  width: 96px;
-  height: 96px;
+  grid-area: logo;
+  width: 72px;
+  height: 72px;
   border-radius: 12px;
   border: 1px solid #f0f0f0;
-  background: #fafafa;
+  background: #f7f9fc;
   display: grid;
   place-items: center;
   overflow: hidden;
-  font-size: 36px;
+  font-size: 28px;
   font-weight: 700;
   color: #1677ff;
 }
@@ -248,16 +246,23 @@ watch(() => route.params.slug, load)
   height: 100%;
   object-fit: cover;
 }
+.org-body {
+  grid-area: body;
+  min-width: 0;
+}
+.org-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 16px;
+}
 .org-body h1 {
-  margin: 0 0 8px;
-  font-size: 28px;
+  margin: 0;
+  font-size: 26px;
   font-weight: 700;
-  color: #262626;
-  letter-spacing: -0.02em;
+  color: #1e3a5f;
 }
 .official-link {
-  display: inline-block;
-  margin-bottom: 16px;
   color: #1677ff;
   font-size: 14px;
   font-weight: 600;
@@ -266,92 +271,37 @@ watch(() => route.params.slug, load)
 .official-link:hover {
   text-decoration: underline;
 }
-.official-miss {
-  margin: 0 0 16px;
-  color: #bfbfbf;
-  font-size: 13px;
-}
 .org-desc {
-  margin: 0 0 22px;
+  margin: 8px 0 0;
   color: #595959;
   font-size: 15px;
-  line-height: 1.75;
-  max-width: 640px;
+  line-height: 1.65;
 }
 .org-meta {
+  grid-area: facts;
   list-style: none;
-  margin: 0;
+  margin: 4px 0 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 .org-meta li {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 12px;
-  align-items: start;
-}
-.ico {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #e6f4ff;
-  position: relative;
-  flex-shrink: 0;
-}
-.ico::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  background: #1677ff;
-}
-.ico-repo::before {
-  width: 12px;
-  height: 10px;
-  border-radius: 2px;
-  box-shadow: 2px 2px 0 #91caff;
-  background: #1677ff;
-}
-.ico-doc::before {
-  width: 9px;
-  height: 12px;
-  border-radius: 1px;
-  background: #1677ff;
-}
-.ico-field::before {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  box-shadow: 6px 0 0 #91caff, 3px 5px 0 #69b1ff;
-  background: #1677ff;
-  left: -3px;
-}
-.ico-lang::before {
-  width: 10px;
-  height: 2px;
-  box-shadow: 0 4px 0 #1677ff, 0 8px 0 #1677ff;
-  background: #1677ff;
-  top: 8px;
-}
-.ico-task::before {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  border: 2px solid #1677ff;
-  background: transparent;
-  box-sizing: border-box;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid #eef2f6;
+  border-radius: 10px;
+  background: #f8fafc;
 }
 .org-meta em {
   display: block;
   font-style: normal;
   font-size: 12px;
   color: #8c8c8c;
-  margin-bottom: 2px;
+  margin-bottom: 6px;
 }
 .org-meta a {
-  color: #262626;
+  color: #1e3a5f;
   word-break: break-all;
   text-decoration: none;
   font-size: 14px;
@@ -360,17 +310,18 @@ watch(() => route.params.slug, load)
   color: #1677ff;
 }
 .num {
-  font-size: 15px;
-  color: #262626;
+  font-size: 22px;
+  color: #1677ff;
+  line-height: 1.2;
 }
 .tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 .tag {
   display: inline-flex;
-  padding: 2px 10px;
+  padding: 2px 8px;
   border-radius: 4px;
   background: #e6f4ff;
   color: #1677ff;
@@ -382,49 +333,50 @@ watch(() => route.params.slug, load)
   color: #595959;
 }
 .task-sec {
-  padding-top: 36px;
+  padding-top: 22px;
 }
 .intro-sec {
-  padding-top: 36px;
+  padding-top: 20px;
   border-bottom: 1px solid #f0f0f0;
-  padding-bottom: 28px;
+  padding-bottom: 16px;
 }
 .intro-sec h2 {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   font-size: 18px;
-  color: #262626;
+  color: #1e3a5f;
 }
 .sec-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .sec-head h2 {
   margin: 0;
   font-size: 18px;
-  color: #262626;
+  color: #1e3a5f;
 }
 .task-list {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  border-top: 1px solid #f0f0f0;
+  gap: 12px;
 }
 .task-row {
   display: flex;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   align-items: center;
-  padding: 20px 4px;
-  border-bottom: 1px solid #f0f0f0;
+  padding: 16px 16px;
+  border: 1px solid #eef2f6;
+  border-radius: 12px;
+  background: #fff;
 }
 .task-main h3 {
   margin: 0 0 6px;
   font-size: 16px;
 }
 .task-main h3 a {
-  color: #262626;
+  color: #1e3a5f;
   text-decoration: none;
 }
 .task-main h3 a:hover {
@@ -432,14 +384,14 @@ watch(() => route.params.slug, load)
 }
 .task-main p {
   margin: 0 0 10px;
-  color: #8c8c8c;
+  color: #64748b;
   font-size: 13px;
   line-height: 1.5;
 }
 .btn-go {
   flex-shrink: 0;
-  padding: 8px 18px;
-  border-radius: 4px;
+  padding: 8px 16px;
+  border-radius: 6px;
   background: #1677ff;
   color: #fff;
   font-size: 13px;
@@ -450,15 +402,21 @@ watch(() => route.params.slug, load)
   background: #4096ff;
 }
 .empty {
-  padding: 28px;
+  padding: 24px;
   text-align: center;
   color: #8c8c8c;
   background: #fafafa;
   border-radius: 8px;
 }
+@media (max-width: 900px) {
+  .org-meta {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 640px) {
   .org-profile {
     grid-template-columns: 1fr;
+    grid-template-areas: "logo" "body" "facts";
   }
   .task-row {
     flex-direction: column;

@@ -18,6 +18,8 @@ class CommunityCreate(BaseModel):
     logo_url: str | None = None
     tags: list[str] | None = None
     intro_body: dict[str, Any] | str | None = None
+    admin_name: str | None = None
+    admin_email: str | None = None
 
 
 class CommunityUpdate(BaseModel):
@@ -183,6 +185,8 @@ class ProjectOut(BaseModel):
     seats_taken: int = 0
     seats_available: int | None = None
     reviewing_count: int = 0
+    mentor_name: str | None = None
+    mentor_email: str | None = None
 
 
 class ApplicationCreate(BaseModel):
@@ -215,6 +219,10 @@ class ApplicationOut(BaseModel):
     current_node: str
     version: int = 0
     project_title: str | None = None
+    # 该生最近一次进展或验收的时间，用来把最新的排到上面
+    latest_update_at: datetime | None = None
+    # progress=新进展，acceptance=新验收；导师点掉标记后为空
+    update_badge: str | None = None
     review_records: list[dict] | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -294,12 +302,17 @@ class MessageCreate(BaseModel):
     # progress=更新进展 midterm=中期反馈 feedback=导师反馈 note=普通备注
     kind: str = Field(
         default="note",
-        pattern="^(note|progress|midterm|feedback|acceptance)$",
+        pattern="^(note|progress|midterm|feedback|acceptance|official|reward)$",
     )
     design_doc_url: str | None = Field(default=None, max_length=512)
     code_url: str | None = Field(default=None, max_length=512)
     attachment_url: str | None = Field(default=None, max_length=512)
     attachment_name: str | None = Field(default=None, max_length=256)
+
+
+class RewardDecision(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    note: str | None = Field(default=None, max_length=500)
 
 
 class MessageOut(BaseModel):
@@ -314,6 +327,8 @@ class MessageOut(BaseModel):
     code_url: str | None = None
     attachment_url: str | None = None
     attachment_name: str | None = None
+    community_name: str | None = None
+    reward_status: str | None = None
     created_at: datetime | None = None
 
 

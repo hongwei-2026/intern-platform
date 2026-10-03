@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import api from '@/api/client'
 import type { ApplicationOut, NotificationListOut, NotificationOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { statusLabel, statusTone } from '@/utils/statusLabel'
 
 const auth = useAuthStore()
+const router = useRouter()
 const open = ref(false)
 const tab = ref<'notify' | 'apps'>('notify')
 const notes = ref<NotificationOut[]>([])
@@ -24,7 +25,9 @@ async function load() {
       api.get<NotificationListOut>('/notifications'),
       api.get<ApplicationOut[]>('/applications/mine').catch(() => ({ data: [] as ApplicationOut[] })),
     ])
-    notes.value = n.data.items
+    notes.value = n.data.items.filter(
+      (item) => !(item.kind === 'project_published' && auth.canApplyProjects && !auth.hasRole('mentor')),
+    )
     unread.value = n.data.unread_count
     apps.value = a.data
   } catch {
@@ -40,6 +43,33 @@ async function markAll() {
   notes.value = notes.value.map((x) => ({ ...x, is_read: 1 }))
 }
 
+const reading = ref<NotificationOut | null>(null)
+
+function pretty(body?: string | null) {
+  const text = body || ''
+  const names: Record<string, string> = {
+    community_final_review: '导师已通过验收，待社区报送',
+    committee_final_review: '组委会结项审核中',
+    mentor_final_review: '导师验收中',
+    final_submitted: '已提交验收',
+    final_rejected: '验收失败',
+    community_review: '社区审核中',
+    committee_review: '组委会审核中',
+    mentor_review: '导师审核中',
+    in_progress: '开发中',
+    completed: '已结项',
+  }
+  return Object.entries(names).reduce((acc, [code, label]) => acc.replaceAll(code, label), text)
+}
+
+function jump() {
+  if (!reading.value) return
+  const target = noteTarget(reading.value)
+  open.value = false
+  reading.value = null
+  void router.push(target)
+}
+
 async function openNote(n: NotificationOut) {
   if (!n.is_read) {
     await api.post(`/notifications/${n.id}/read`).catch(() => null)
@@ -47,8 +77,33 @@ async function openNote(n: NotificationOut) {
     unread.value = Math.max(0, unread.value - 1)
   }
   open.value = false
+  reading.value = n
 }
 
+function noteTarget(n: NotificationOut): string {
+  if (n.kind === 'project_published') {
+    if (auth.canApplyProjects && !auth.hasRole('mentor')) return auth.portalHome()
+    return n.project_id ? `/projects/${n.project_id}` : '/mentor'
+  }
+  if (n.kind === 'app_reward' && auth.hasRole('community_admin')) return '/org?tab=rewards'
+  if (n.kind === 'committee_roster' && auth.hasRole('committee')) return '/committee?tab=roster'
+  if (n.kind.startsWith('site_news:')) {
+    const id = n.kind.slice('site_news:'.length)
+    return id ? `/news/${encodeURIComponent(id)}` : '/news'
+  }
+  if (n.kind === 'site_final') return '/completed'
+  if (n.kind.startsWith('community_') || n.title === '社区对接') {
+    if (auth.hasRole('committee')) return '/committee?tab=mail'
+    if (auth.hasRole('community_admin')) return '/org?tab=liaison'
+    if (auth.hasRole('mentor')) return '/mentor'
+  }
+  if (auth.hasRole('mentor') && n.application_id) return `/mentor/a/${n.application_id}`
+  if (auth.isStaff && n.application_id) return '/mentor'
+  if (n.application_id) return `/student/applications/${n.application_id}`
+  if (n.project_id) return `/projects/${n.project_id}`
+  if (auth.canApplyProjects) return '/me?tab=applications'
+  return auth.portalHome()
+}
 function onDocClick(e: MouseEvent) {
   const t = e.target as HTMLElement | null
   if (!t?.closest('.notify-wrap')) open.value = false
@@ -117,32 +172,22 @@ defineExpose({ refresh: load })
 
       <div v-if="tab === 'notify'" class="notify-body">
         <div class="notify-toolbar">
-          <span class="muted">项目审核结果会出现在这里</span>
+          <span class="muted">审核结果、最新动态和结项公示会出现在这里</span>
           <button v-if="hasUnread" class="linkish" type="button" @click="markAll">全部已读</button>
         </div>
         <p v-if="loading" class="muted pad">加载中…</p>
         <p v-else-if="!notes.length" class="muted pad">暂无通知</p>
-        <RouterLink
+        <button
           v-for="n in notes"
           :key="n.id"
+          type="button"
           class="notify-item"
           :class="{ unread: !n.is_read }"
-          :to="
-            auth.isStaff && n.application_id
-              ? '/mentor'
-              : n.application_id
-                ? `/student/applications/${n.application_id}`
-                : n.project_id
-                  ? `/projects/${n.project_id}`
-                  : auth.canApplyProjects
-                    ? '/me?tab=applications'
-                    : auth.portalHome()
-          "
           @click="openNote(n)"
         >
           <strong>{{ n.title }}</strong>
-          <span class="muted">{{ n.body }}</span>
-        </RouterLink>
+          <span class="muted">{{ pretty(n.body) }}</span>
+        </button>
       </div>
 
       <div v-else-if="auth.canApplyProjects" class="notify-body">
@@ -167,5 +212,17 @@ defineExpose({ refresh: load })
         </RouterLink>
       </div>
     </div>
+    <Teleport to="body">
+      <div v-if="reading" class="note-mask" @click.self="reading = null">
+        <div class="note-sheet" role="dialog" aria-label="通知详情">
+          <header>
+            <strong>{{ reading.title }}</strong>
+            <button type="button" class="x" aria-label="关闭" @click="reading = null">×</button>
+          </header>
+          <p>{{ pretty(reading.body) || '没有更多说明。' }}</p>
+          <button type="button" class="jump" @click="jump">前往对应页面</button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

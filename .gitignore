@@ -17,7 +17,11 @@ apps/web/dist/
 .ruff_cache/
 data/*.db
 data/*.db-*
+data/backups/
+data/mail/
 data/oauth_clients.json
 uploads/
 *.log
 .DS_Store
+intern-platform-deploy*.zip
+scripts/_tmp_*

@@ -10,6 +10,8 @@ KIND_TAGS: dict[str, str] = {
     "midterm": "【中期】",
     "feedback": "【反馈】",
     "acceptance": "【验收】",
+    "official": "【社区通知】",
+    "reward": "【奖励】",
 }
 
 
@@ -68,6 +70,8 @@ def unpack_deliverable(raw: str) -> dict[str, Any]:
                 out["code_url"] = str(obj.get("code_url") or "").strip()
                 out["attachment_url"] = str(obj.get("attachment_url") or "").strip()
                 out["attachment_name"] = str(obj.get("attachment_name") or "").strip()
+                out["decision"] = str(obj.get("decision") or "").strip()
+                out["decision_note"] = str(obj.get("decision_note") or "").strip()
         except json.JSONDecodeError:
             pass
     return out

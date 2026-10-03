@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import api from '@/api/client'
+import api, { withFileAuth } from '@/api/client'
 import type { ApplicationOut, MessageOut, ProjectOut, ReviewResponse } from '@/api/types'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import PdfPreviewModal from '@/components/PdfPreviewModal.vue'
@@ -23,13 +23,13 @@ const error = ref('')
 const busy = ref(false)
 const activeId = ref<number | null>(null)
 const comment = ref('')
-const feedbackText = ref('')
 const detail = ref<ApplicationOut | null>(null)
 const detailLoading = ref(false)
 const logs = ref<MessageOut[]>([])
 
 const confirmOpen = ref(false)
 const pendingDecision = ref<'approve' | 'reject' | null>(null)
+const cancelOpen = ref(false)
 
 const previewOpen = ref(false)
 const previewUrl = ref('')
@@ -143,7 +143,6 @@ function previewDesign() {
 async function selectApp(id: number) {
   activeId.value = id
   comment.value = ''
-  feedbackText.value = ''
   detailLoading.value = true
   logs.value = []
   try {
@@ -164,36 +163,13 @@ async function selectApp(id: number) {
   }
 }
 
-async function sendFeedback() {
-  const text =
-    mentorPhase.value === 'app_review' ? comment.value.trim() : feedbackText.value.trim()
-  if (!active.value || !text) {
-    toast.value?.show('请先填写意见内容，再点「仅发留言」', 'err')
-    return
-  }
-  const who = active.value.student_name || active.value.student_email || '学生'
-  const appId = active.value.id
-  busy.value = true
-  try {
-    await api.post(`/applications/${appId}/messages`, {
-      body: text,
-      kind: 'feedback',
-    })
-    if (mentorPhase.value === 'app_review') comment.value = ''
-    else feedbackText.value = ''
-    const { data: msgs } = await api.get<MessageOut[]>(`/applications/${appId}/messages`)
-    logs.value = msgs
-    toast.value?.show(`已发给「${who}」· 申请 #${appId}（学生在申请详情顶部可见）`, 'ok')
-  } catch (e: unknown) {
-    toast.value?.show(e instanceof Error ? e.message : '发送失败', 'err')
-  } finally {
-    busy.value = false
-  }
+function cancelAssignment() {
+  if (!active.value) return
+  cancelOpen.value = true
 }
 
-async function cancelAssignment() {
+async function confirmCancelAssignment() {
   if (!active.value) return
-  if (!window.confirm('确定取消该学生的任务接取？名额将释放，学生可再次申请。')) return
   busy.value = true
   try {
     await api.post(`/applications/${active.value.id}/cancel-assignment`)
@@ -314,6 +290,19 @@ onMounted(async () => {
   <div class="page mentor-page wide">
     <ToastFeedback ref="toast" />
     <ConfirmDialog
+      v-model:open="cancelOpen"
+      title="取消接取"
+      :message="
+        active
+          ? `确定取消「${active.student_name || active.student_email}」的任务接取？名额将释放，学生可再次申请。`
+          : ''
+      "
+      confirm-text="确认取消"
+      cancel-text="返回"
+      danger
+      @confirm="confirmCancelAssignment"
+    />
+    <ConfirmDialog
       v-model:open="confirmOpen"
       :title="
         mentorPhase === 'final'
@@ -329,8 +318,8 @@ onMounted(async () => {
           ? mentorPhase === 'final'
             ? `${pendingDecision === 'reject' ? '驳回' : '通过'}「${active.student_name || active.student_email}」的结项（申请 #${active.id}）。`
             : pendingDecision === 'reject'
-              ? `拒绝「${active.student_name || active.student_email}」对「${active.project_title}」的申请 #${active.id}。仅发留言不会拒绝。`
-              : `通过「${active.student_name || active.student_email}」对「${active.project_title}」的设计（申请 #${active.id}）。通过后名额立即预留并公示；社区/组委会确认后学生方可启动开发。仅发留言不会通过。`
+              ? `拒绝「${active.student_name || active.student_email}」对「${active.project_title}」的申请 #${active.id}。`
+              : `通过「${active.student_name || active.student_email}」对「${active.project_title}」的设计（申请 #${active.id}）。通过后名额立即预留；社区审核通过后组委会自动接收中选。学生在名额预留后即可启动开发。`
           : ''
       "
       :confirm-text="
@@ -483,7 +472,7 @@ onMounted(async () => {
                       <td>
                         <a
                           v-if="m.attachment_url"
-                          :href="m.attachment_url"
+                          :href="withFileAuth(m.attachment_url)"
                           target="_blank"
                           rel="noopener"
                         >{{ m.attachment_name || fileLabel(m.attachment_url) }}</a>
@@ -544,14 +533,14 @@ onMounted(async () => {
                 <p class="phase-hint">
                   正在审：<strong>{{ active.student_name || active.student_email }}</strong>
                   · 申请 #{{ active.id }} · 阶段：审核设计文档（尚未录取）。
-                  「仅发留言」不会通过；须点「通过设计」并确认。
+                  退回时必须写下原因。
                 </p>
                 <label class="form">
-                  审核意见（可选）
+                  退回意见（退回时必填）
                   <textarea
                     v-model="comment"
                     rows="3"
-                    placeholder="给学生的说明：可随「通过/拒绝」一并记录，也可点「仅发留言」不改状态"
+                    placeholder="通过可以不写。退回时必须写明问题，学生再次提交时会看到。"
                   />
                 </label>
                 <div class="decide-actions">
@@ -561,9 +550,6 @@ onMounted(async () => {
                   <button class="btn danger lg" type="button" :disabled="busy" @click="askDecide('reject')">
                     拒绝申请
                   </button>
-                  <button class="btn secondary" type="button" :disabled="busy" @click="sendFeedback">
-                    仅发留言
-                  </button>
                   <RouterLink class="btn secondary" :to="`/projects/${active.project_id}`">查看项目</RouterLink>
                 </div>
               </div>
@@ -571,19 +557,6 @@ onMounted(async () => {
 
             <!-- 开发期：进展留言 + 取消接取（不再出现申请通过/拒绝） -->
             <template v-else-if="mentorPhase === 'dev'">
-              <div class="feedback-panel">
-                <label class="form">
-                  进展指导留言（不改变任务状态）
-                  <textarea
-                    v-model="feedbackText"
-                    rows="2"
-                    placeholder="针对进展/中期的建议，学生会在申请详情看到"
-                  />
-                </label>
-                <button class="btn secondary" type="button" :disabled="busy" @click="sendFeedback">
-                  发送留言
-                </button>
-              </div>
               <div class="decide-panel dev-actions">
                 <p class="phase-hint">开发期操作：指导沟通或管理接取关系。结项请等学生提交验收后，在「结项」队列处理。</p>
                 <div class="decide-actions">

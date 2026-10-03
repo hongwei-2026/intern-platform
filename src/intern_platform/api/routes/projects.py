@@ -70,6 +70,14 @@ def list_projects(
         return projects_to_out(db, rows)
 
     effective_status = status if status is not None else "published"
+    if effective_status == "offline":
+        if auth is None:
+            raise HTTPException(status_code=401, detail="需要登录")
+        if community_id is None or not (
+            auth.has_role("committee")
+            or auth.has_community_role("community_admin", community_id)
+        ):
+            raise HTTPException(status_code=403, detail="无权查看已下架项目")
     rows = ProjectService(db).list_projects(status=effective_status, community_id=community_id)
     if effective_status == "published":
         closed = ProjectService(db).list_projects(status="closed", community_id=community_id)
@@ -87,10 +95,22 @@ def list_my_projects(
 
 
 @router.get("/{project_id:int}", response_model=ProjectOut)
-def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectOut:
+def get_project(
+    project_id: int,
+    auth: AuthUser | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+) -> ProjectOut:
     row = ProjectService(db).get(project_id)
     if row is None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if row.status == "offline":
+        allowed = auth is not None and (
+            auth.has_role("committee")
+            or auth.id == row.mentor_id
+            or auth.has_community_role("community_admin", row.community_id)
+        )
+        if not allowed:
+            raise HTTPException(status_code=404, detail="项目不存在")
     return project_to_out(db, row)
 
 
@@ -136,6 +156,8 @@ def update_project(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return project_to_out(db, row)
 
 
@@ -152,6 +174,24 @@ def publish_project(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return project_to_out(db, row)
+
+
+@router.post("/{project_id:int}/unpublish", response_model=ProjectOut)
+def unpublish_project(
+    project_id: int,
+    auth: AuthUser = Depends(require_roles("mentor", "community_admin", "committee")),
+    db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
+) -> ProjectOut:
+    try:
+        row = ProjectService(db).unpublish(auth, project_id, ledger)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return project_to_out(db, row)
 
 

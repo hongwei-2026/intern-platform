@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { getStoredToken, withFileAuth } from '@/api/client'
 import * as pdfjs from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
@@ -54,7 +55,10 @@ async function load(url: string) {
   if (!url) return
   loading.value = true
   try {
-    const res = await fetch(url, { credentials: 'same-origin' })
+    const headers: HeadersInit = {}
+    const token = getStoredToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+    const res = await fetch(withFileAuth(url), { credentials: 'same-origin', headers })
     if (!res.ok) throw new Error('文档加载失败')
     const data = await res.arrayBuffer()
     doc = await pdfjs.getDocument({ data }).promise

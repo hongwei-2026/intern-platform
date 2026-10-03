@@ -3,20 +3,11 @@ import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import api from '@/api/client'
 import type { ApplicationOut } from '@/api/types'
-import { nodeLabel, statusLabel, statusTone } from '@/utils/statusLabel'
+import { stageLabel, statusLabel, statusTone } from '@/utils/statusLabel'
 
 const list = ref<ApplicationOut[]>([])
 const error = ref('')
 const loading = ref(true)
-
-function statusHint(status: string) {
-  if (status === 'community_review') return '导师已过，等社区'
-  if (status === 'committee_review') return '等组委会终审'
-  if (status === 'mentor_review' || status === 'submitted') return '等导师审设计'
-  if (status === 'selected') return '已录取'
-  if (status === 'in_progress') return '开发中'
-  return ''
-}
 
 onMounted(async () => {
   try {
@@ -56,7 +47,7 @@ onMounted(async () => {
         <div class="app-main">
           <strong>{{ a.project_title || `项目 #${a.project_id}` }}</strong>
           <span class="muted"
-            >申请 #{{ a.id }} · {{ statusHint(a.status) || nodeLabel(a.current_node) || '—' }}</span
+            >申请 #{{ a.id }} · {{ stageLabel(a.status, a.current_node) || '—' }}</span
           >
         </div>
         <span class="badge" :class="statusTone(a.status)">{{ statusLabel(a.status) }}</span>

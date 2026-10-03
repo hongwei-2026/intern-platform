@@ -35,3 +35,35 @@ def create_announcement(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return AnnouncementOut.model_validate(row)
+
+
+@router.put("/{announcement_id}", response_model=AnnouncementOut)
+def revise_announcement(
+    announcement_id: int,
+    body: AnnouncementCreate,
+    auth: AuthUser = Depends(require_roles("committee")),
+    db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
+) -> AnnouncementOut:
+    try:
+        row = AnnouncementService(db).revise(auth, announcement_id, body, ledger)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AnnouncementOut.model_validate(row)
+
+
+@router.delete("/{announcement_id}", status_code=204)
+def withdraw_announcement(
+    announcement_id: int,
+    auth: AuthUser = Depends(require_roles("committee")),
+    db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
+) -> None:
+    try:
+        AnnouncementService(db).withdraw(auth, announcement_id, ledger)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

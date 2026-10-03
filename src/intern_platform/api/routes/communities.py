@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from intern_platform.db.session import get_db
-from intern_platform.dependencies.auth import AuthUser, get_current_user, require_roles
+from intern_platform.dependencies.auth import (
+    AuthUser,
+    get_current_user,
+    get_optional_user,
+    require_roles,
+)
 from intern_platform.dependencies.ledger import LedgerRequestContext, get_ledger_context
 from intern_platform.schemas.business import (
     CommunityCreate,
@@ -29,9 +34,13 @@ router = APIRouter(prefix="/communities", tags=["communities"])
 @router.get("", response_model=list[CommunityOut])
 def list_communities(
     status: str | None = Query(default="approved"),
+    auth: AuthUser | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ) -> list[CommunityOut]:
-    rows = CommunityService(db).list_communities(status=status)
+    wanted = (status or "approved").strip().lower()
+    if wanted != "approved" and (auth is None or not auth.has_role("committee")):
+        raise HTTPException(status_code=403, detail="未公开的社区列表仅组委会可查看")
+    rows = CommunityService(db).list_communities(status=wanted)
     # 组织码不对外公开列表暴露
     return [community_to_out(r, include_invite=False) for r in rows]
 

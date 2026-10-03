@@ -18,6 +18,19 @@ const typeLabel: Record<string, string> = {
   general: '公告',
 }
 
+type PubBlock = { id?: string; type?: string; text?: string; url?: string; rows?: string[][] }
+
+function pubBlocks(body?: string | null): PubBlock[] | null {
+  if (!body) return null
+  try {
+    const data = JSON.parse(body) as { blocks?: PubBlock[] }
+    if (Array.isArray(data.blocks) && data.blocks.length) return data.blocks
+  } catch {
+    /* 旧公示是纯文字 */
+  }
+  return null
+}
+
 function yearOf(raw?: string | null) {
   if (!raw) return 0
   const y = Number(String(raw).slice(0, 4))
@@ -97,7 +110,17 @@ watch(() => auth.isLoggedIn, load)
             <span class="badge slate">{{ typeLabel[a.type] || a.type }}</span>
             <span v-if="a.published_at" style="margin-left: 0.5rem">{{ a.published_at }}</span>
           </p>
-          <p v-if="a.body" style="white-space: pre-wrap; margin-top: 0.75rem">{{ a.body }}</p>
+          <div v-if="pubBlocks(a.body)" class="pub-body">
+            <template v-for="(block, i) in pubBlocks(a.body)" :key="block.id || i">
+              <p v-if="!block.type || block.type === 'text'">{{ block.text }}</p>
+              <img v-else-if="block.type === 'image' && block.url" :src="block.url" alt="" />
+              <table v-else-if="block.type === 'table'" class="pub-table">
+                <tr v-for="(row, ri) in block.rows" :key="ri"><td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td></tr>
+              </table>
+              <video v-else-if="block.url" :src="block.url" controls />
+            </template>
+          </div>
+          <p v-else-if="a.body" style="white-space: pre-wrap; margin-top: 0.75rem">{{ a.body }}</p>
         </article>
       </div>
     </template>
@@ -126,4 +149,8 @@ watch(() => auth.isLoggedIn, load)
 .mine ul { list-style: none; margin: 0; padding: 0; }
 .mine li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; }
 .mine span { color: #8c8c8c; font-size: 0.85rem; }
+.pub-table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+.pub-table td { border: 1px solid #d0d7e2; padding: 6px 8px; }
+.pub-body p { white-space: pre-wrap; margin: 0.75rem 0 0; }
+.pub-body img, .pub-body video { display: block; width: min(100%, 720px); border-radius: 12px; margin: 0.75rem 0; }
 </style>

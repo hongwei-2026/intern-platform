@@ -16,10 +16,13 @@ const router = createRouter({
     { path: '/communities', name: 'communities', component: () => import('@/views/CommunitiesView.vue') },
     { path: '/communities/:slug', name: 'community-detail', component: () => import('@/views/CommunityDetailView.vue') },
     { path: '/projects', name: 'projects', component: () => import('@/views/ProjectsView.vue') },
+    { path: '/projects/:id/apply', name: 'project-apply', component: () => import('@/views/ProjectApplyView.vue'), meta: { requiresAuth: true } },
     { path: '/projects/:id', name: 'project-detail', component: () => import('@/views/ProjectDetailView.vue') },
     { path: '/announcements', redirect: '/completed' },
     { path: '/guide', name: 'guide', component: () => import('@/views/GuideView.vue') },
     { path: '/news', name: 'news', component: () => import('@/views/NewsView.vue') },
+    { path: '/news/:id', name: 'news-post', component: () => import('@/views/NewsPostView.vue') },
+    { path: '/banner/:id', name: 'banner', component: () => import('@/views/BannerView.vue') },
     { path: '/completed', name: 'completed', component: () => import('@/views/CompletedView.vue') },
     {
       path: '/me',
@@ -72,9 +75,27 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/student/applications/:id/reward',
+      name: 'student-reward',
+      component: () => import('@/views/student/RewardApplyView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/org',
       name: 'org-portal',
       component: () => import('@/views/org/OrgPortalView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/org/final/:id',
+      name: 'org-final-submit',
+      component: () => import('@/views/org/CommunityFinalSubmitView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/mentor/community',
+      name: 'mentor-community',
+      component: () => import('@/views/mentor/MentorCommunityView.vue'),
       meta: { requiresAuth: true },
     },
     {
@@ -105,9 +126,7 @@ const router = createRouter({
     },
     {
       path: '/community/reviews',
-      name: 'community-reviews',
-      component: () => import('@/views/community/PendingReviewsView.vue'),
-      meta: { requiresAuth: true },
+      redirect: { path: '/org', query: { tab: 'liaison' } },
     },
     {
       // 隐藏入口：不对公开登录页展示、不进主导航
@@ -133,8 +152,13 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  auth.alignScope(to.path)
   if (auth.token && !auth.user) {
-    await auth.fetchMe()
+    const who = await auth.fetchMe()
+    if (who === 'disabled' && to.name !== 'login' && to.name !== 'committee-login') {
+      const role = to.path.startsWith('/mentor') ? 'mentor' : to.path.startsWith('/org') ? 'org' : 'student'
+      return { name: 'login', query: { role } }
+    }
   }
   if (to.meta.requiresAuth && !auth.isLoggedIn) {
     if (to.meta.requiresCommittee) {
@@ -154,6 +178,17 @@ router.beforeEach(async (to) => {
   }
   if (to.meta.requiresCommittee && !auth.hasRole('committee')) {
     return { name: 'committee-login', query: { redirect: to.fullPath } }
+  }
+  if (auth.isLoggedIn && to.path.startsWith('/mentor') && !auth.hasRole('mentor')) {
+    return { path: auth.portalHome() }
+  }
+  if (
+    auth.isLoggedIn &&
+    (to.path.startsWith('/org') || to.path.startsWith('/community')) &&
+    !auth.hasRole('community_admin') &&
+    !auth.hasRole('committee')
+  ) {
+    return { path: auth.hasRole('mentor') ? '/mentor' : auth.portalHome() }
   }
   if (
     to.path === '/projects' &&
@@ -177,6 +212,7 @@ router.beforeEach(async (to) => {
   if (
     auth.isLoggedIn &&
     auth.isStaff &&
+    !auth.hasRole('committee') &&
     (to.path.startsWith('/student/') ||
       (to.path === '/me' && String(to.query.tab || '') === 'applications'))
   ) {

@@ -72,7 +72,9 @@ def client_and_db():
             db.add(u)
             db.flush()
             users[code] = u
-            role_code = "student" if code == "joiner" else code
+            if code == "joiner":
+                continue
+            role_code = code
             db.add(
                 UserRole(
                     user_id=u.id,
@@ -212,9 +214,11 @@ def test_pdf_upload_and_apply(client_and_db) -> None:
     design_url = up2.json()["url"]
     assert resume_url.startswith("/api/v1/uploads/files/")
 
-    got = client.get(resume_url)
+    got = client.get(resume_url, headers=headers)
     assert got.status_code == 200
     assert got.content.startswith(b"%PDF")
+    blocked = client.get(resume_url)
+    assert blocked.status_code == 401
 
     r = client.post(
         f"/api/v1/projects/{ids['project_id']}/applications",
