@@ -545,6 +545,9 @@ onMounted(async () => {
         <h1>{{ myCommunity?.name || '组织工作台' }}</h1>
         <p class="sub">改对外展示、导师和项目。已发布的主页从个人中心查看。</p>
       </div>
+      <div v-if="myCommunity?.slug" class="head-actions">
+        <RouterLink class="link" :to="`/communities/${myCommunity.slug}`">查看公开主页</RouterLink>
+      </div>
     </header>
 
     <section v-if="!myCommunity" class="panel">
@@ -620,7 +623,7 @@ onMounted(async () => {
           <!-- 右：预览区 -->
           <aside class="pane preview-pane">
             <h3 class="pane-title">
-              <RouterLink class="preview-jump" :to="`/communities/${myCommunity.slug}`">预览页 ›</RouterLink>
+              <RouterLink class="preview-jump" :to="`/communities/${myCommunity.slug}`">查看公开主页 ›</RouterLink>
             </h3>
             <div class="live">
               <header class="live-head">
