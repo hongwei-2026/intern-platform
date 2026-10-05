@@ -329,9 +329,9 @@ watch(() => route.params.id, load)
               项目申请书 ›
             </button>
             <RouterLink
-              v-else-if="iAmSelected"
+              v-else-if="iAmSelected && myApp"
               class="ospp-selected-link"
-              :to="`/student/applications/${myApp!.id}?tab=task`"
+              :to="`/student/applications/${myApp.id}?tab=task`"
               @click="seedMyProjectTrail"
             >
               进入我的项目 ›
