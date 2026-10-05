@@ -1,16 +1,27 @@
-"""本地安全修复核对。项目根目录执行: python scripts/verify_security.py"""
+"""安全修复核对。项目根目录执行:
+
+  python scripts/verify_security.py              # 本地 127.0.0.1:8001
+  python scripts/verify_security.py --cloud       # 云端 intern.openatom.club
+  set SECURITY_API_BASE=https://host/api/v1 && python scripts/verify_security.py
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import ssl
 import time
 import urllib.error
 import urllib.request
 import uuid
 
-BASE = "http://127.0.0.1:8001/api/v1"
+LOCAL_BASE = "http://127.0.0.1:8001/api/v1"
+CLOUD_BASE = "https://intern.openatom.club/api/v1"
+BASE = LOCAL_BASE
 PASS = 0
 FAIL = 0
+TIMEOUT = 8
 
 
 def ok(msg: str) -> None:
@@ -37,8 +48,9 @@ def call(method: str, path: str, token: str | None = None, body: dict | None = N
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
+    ctx = ssl.create_default_context() if BASE.startswith("https://") else None
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx) as resp:
             return resp.status, resp.read().decode("utf-8", "ignore")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", "ignore")
@@ -54,23 +66,68 @@ def login(email: str) -> str | None:
 
 
 def main() -> int:
+    global BASE, TIMEOUT
+    parser = argparse.ArgumentParser(description="安全修复核对")
+    parser.add_argument("--cloud", action="store_true", help="打云端 intern.openatom.club")
+    parser.add_argument("--base", default="", help="自定义 API 前缀，如 https://host/api/v1")
+    args = parser.parse_args()
+    env_base = (os.environ.get("SECURITY_API_BASE") or "").strip()
+    if args.base:
+        BASE = args.base.rstrip("/")
+    elif args.cloud:
+        BASE = CLOUD_BASE
+    elif env_base:
+        BASE = env_base.rstrip("/")
+    else:
+        BASE = LOCAL_BASE
+    TIMEOUT = 20 if BASE.startswith("https://") else 8
+    label = "云端" if "openatom.club" in BASE or args.cloud else "本地"
+
     print()
-    print("===== 本地安全修复核对 =====")
+    print(f"===== {label}安全修复核对 =====")
     print(f"地址: {BASE}")
     print()
 
     code, _ = call("GET", "/health")
     if code != 200:
-        bad("后端没启动。请先打开 http://127.0.0.1:8001")
+        bad(f"后端不可用（HTTP {code}）。本地请先启动；云端请检查站点。")
         print()
-        print("先启动项目，再运行: python scripts/verify_security.py")
+        print("用法: python scripts/verify_security.py [--cloud]")
         return 1
     ok("后端已启动")
 
-    student = login("student@demo.hust.edu.cn")
+    # 优先纯学生；若演示学生被污染（挂了组织角色），再尝试其他演示学生
+    student_email = "student@demo.hust.edu.cn"
+    student = login(student_email)
+    if student:
+        code, text = call("GET", "/auth/me", token=student)
+        me = json.loads(text) if code == 200 else {}
+        roles = me.get("roles") or []
+        polluted = any(
+            r.get("code") in {"community_admin", "mentor", "committee"} for r in roles
+        )
+        if polluted:
+            for alt in (
+                "linxia@demo.hust.edu.cn",
+                "zhouqi@demo.hust.edu.cn",
+                "chenrui@demo.hust.edu.cn",
+            ):
+                alt_tok = login(alt)
+                if not alt_tok:
+                    continue
+                c2, t2 = call("GET", "/auth/me", token=alt_tok)
+                me2 = json.loads(t2) if c2 == 200 else {}
+                roles2 = me2.get("roles") or []
+                if not any(
+                    r.get("code") in {"community_admin", "mentor", "committee"}
+                    for r in roles2
+                ):
+                    student = alt_tok
+                    student_email = alt
+                    break
     admin = login("admin@demo.hust.edu.cn")
     if student:
-        ok("学生账号能登录")
+        ok(f"学生账号能登录（{student_email}）")
     else:
         bad("学生账号登录失败")
         return 1
@@ -80,8 +137,31 @@ def main() -> int:
         bad("组织账号登录失败")
         return 1
 
+    code, text = call("GET", "/projects")
+    projects = json.loads(text) if code == 200 else []
+    proj = next((p for p in projects if "SpMV" in str(p.get("title", ""))), None)
+    if proj is None and projects:
+        proj = projects[0]
+
     code, text = call("GET", "/applications/mine", token=student)
     apps = json.loads(text) if code == 200 else []
+    if not apps and proj:
+        # 云端纯学生可能还没有申请：先建一条草稿再测自审拦截
+        code, text = call(
+            "POST",
+            f"/projects/{proj['id']}/applications",
+            token=student,
+            body={
+                "statement": "security-self-approve-check",
+                "extra_fields": {},
+                "submit": False,
+            },
+        )
+        if code in (200, 201):
+            apps = [json.loads(text)]
+        else:
+            # 可能已有申请记录但不在 mine 列表；继续用后续项目探测
+            apps = []
     if not apps:
         bad("学生名下没有申请，测不了「不能自己审核」")
     else:
@@ -97,11 +177,6 @@ def main() -> int:
         else:
             bad(f"学生自己审核没有被拦住（返回 {code}，应该是 403）")
 
-    code, text = call("GET", "/projects")
-    projects = json.loads(text) if code == 200 else []
-    proj = next((p for p in projects if "SpMV" in str(p.get("title", ""))), None)
-    if proj is None and projects:
-        proj = projects[0]
     if proj:
         code, _ = call(
             "POST",
