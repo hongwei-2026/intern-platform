@@ -642,11 +642,13 @@ def retire_community(
     community_id: int,
     auth: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> dict:
     _committee(auth)
     community = db.get(Community, community_id)
     if community is None:
         raise HTTPException(status_code=404, detail="组织不存在")
+    before_status = community.status
     active = db.scalar(
         select(Application.id)
         .join(Project, Project.id == Application.project_id)
@@ -657,9 +659,24 @@ def retire_community(
     )
     if active:
         community.status = "suspended"
-        db.commit()
-        return {"ok": True, "status": "suspended"}
-    community.status = "rejected"
-    community.review_comment = "组委会删除"
+        new_status = "suspended"
+    else:
+        community.status = "rejected"
+        community.review_comment = "组委会删除"
+        new_status = "rejected"
+    AuditLogRepository(db).create(
+        actor_id=auth.id,
+        actor_role="committee",
+        action="community.retire",
+        resource_type="community",
+        resource_id=community_id,
+        before={"status": before_status},
+        after={"status": new_status, "had_active_applications": bool(active)},
+        outcome="SUCCESS",
+        request_id=ledger.request_id,
+        trace_id=ledger.trace_id,
+        ip=ledger.ip,
+        user_agent=ledger.user_agent,
+    )
     db.commit()
-    return {"ok": True, "status": "rejected"}
+    return {"ok": True, "status": new_status}

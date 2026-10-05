@@ -269,6 +269,14 @@ def _viewer(
     user = db.get(User, user_id)
     if user is None:
         return None
+    # 与 get_current_user 一致：改密吊销 + 停用账号不能再下私有附件
+    from intern_platform.dependencies.auth import password_token_stamp, user_is_disabled
+
+    token_pv = payload.get("pv")
+    if token_pv is None or token_pv != password_token_stamp(user.password_hash):
+        return None
+    if user_is_disabled(db, user.id):
+        return None
     return AuthUser(user=user, roles=load_user_roles(db, user.id))
 
 
