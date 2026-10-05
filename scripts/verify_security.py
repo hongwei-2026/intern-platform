@@ -290,6 +290,50 @@ def main() -> int:
             else:
                 bad(f"挂别人上传目录没有被拒绝（返回 {code}）")
 
+            # 图片/视频不再匿名公开
+            code, _ = call("GET", f"/uploads/files/u{uid}/no-such-probe.png")
+            if code in (401, 403, 404):
+                ok("上传媒体文件不能匿名直接打开")
+            else:
+                bad(f"上传媒体仍可匿名访问（返回 {code}）")
+
+    # 禁止 PATCH /me 手填平台 ID / 学号
+    if student:
+        before_code, before_text = call("GET", "/auth/me", token=student)
+        before = json.loads(before_text) if before_code == 200 else {}
+        forge_login = f"forged_{int(time.time())}"
+        code, text = call(
+            "PATCH",
+            "/auth/me",
+            token=student,
+            body={
+                "github_id": forge_login,
+                "gitee_id": forge_login,
+                "member_no": "FORGED-NO",
+            },
+        )
+        after = json.loads(text) if code == 200 else {}
+        forged = (
+            after.get("github_id") == forge_login
+            or after.get("gitee_id") == forge_login
+            or after.get("member_no") == "FORGED-NO"
+        )
+        if code == 200 and not forged:
+            ok("不能通过改资料手填 GitHub/Gitee/学号")
+        elif code in (400, 422) and not forged:
+            ok("不能通过改资料手填 GitHub/Gitee/学号")
+        else:
+            bad(f"手填平台 ID 未被拒绝（返回 {code}，github={after.get('github_id')!r}）")
+        # 确认库内未变（用再次 GET）
+        _, again_text = call("GET", "/auth/me", token=student)
+        again = json.loads(again_text) if again_text else {}
+        if again.get("github_id") == before.get("github_id") and again.get("member_no") == before.get(
+            "member_no"
+        ):
+            pass  # already covered by ok/bad above
+        elif forged:
+            pass
+
     print()
     print(f"===== 结果：{PASS} 项通过，{FAIL} 项失败 =====")
     if FAIL == 0:

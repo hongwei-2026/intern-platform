@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -14,6 +14,8 @@ from intern_platform.schemas.auth import UserOut
 from intern_platform.services import oauth_service as oauth
 
 router = APIRouter(prefix="/auth/oauth", tags=["oauth"])
+
+OAUTH_BIND_COOKIE = "oauth_bind_sess"
 
 
 class OAuthProviderStatus(BaseModel):
@@ -45,6 +47,32 @@ class PatBindRequest(BaseModel):
     token: str = Field(min_length=8, max_length=512)
 
 
+def _set_bind_cookie(response: Response, user_id: int) -> None:
+    settings = get_settings()
+    secure = settings.public_api_base.startswith("https://")
+    response.set_cookie(
+        key=OAUTH_BIND_COOKIE,
+        value=oauth.create_oauth_bind_cookie(user_id=user_id),
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path="/",
+    )
+
+
+def _clear_bind_cookie(response: Response) -> None:
+    settings = get_settings()
+    secure = settings.public_api_base.startswith("https://")
+    response.delete_cookie(
+        key=OAUTH_BIND_COOKIE,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+    )
+
+
 @router.get("/providers", response_model=list[OAuthProviderStatus])
 def list_providers() -> list[OAuthProviderStatus]:
     settings = get_settings()
@@ -72,6 +100,7 @@ def list_providers() -> list[OAuthProviderStatus]:
 @router.get("/{provider}/start", response_model=OAuthStartResponse)
 def oauth_start(
     provider: str,
+    response: Response,
     auth: AuthUser = Depends(get_current_user),
 ) -> OAuthStartResponse:
     settings = get_settings()
@@ -82,6 +111,7 @@ def oauth_start(
     docs = oauth.PROVIDER_DOCS.get(p.key, {})
     state = oauth.create_oauth_state(user_id=auth.id, provider=p.key)
     cb = oauth.callback_uri(p.key, settings)
+    _set_bind_cookie(response, auth.id)
 
     if p.configured:
         url = oauth.build_authorize_url(p, state, settings)
@@ -105,6 +135,19 @@ def oauth_start(
         create_url=docs.get("create_url", ""),
         hint=docs.get("hint", ""),
     )
+
+
+@router.delete("/{provider}/bind", response_model=UserOut)
+def oauth_unbind(
+    provider: str,
+    auth: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    settings = get_settings()
+    p = oauth.get_provider(provider, settings)
+    if p is None:
+        raise HTTPException(status_code=404, detail="不支持的平台")
+    return oauth.unbind_field(db, auth.user, p.user_field, provider=p.key)
 
 
 @router.post("/{provider}/pat", response_model=UserOut)
@@ -153,6 +196,7 @@ def save_oauth_client(
 @router.get("/{provider}/callback")
 async def oauth_callback(
     provider: str,
+    request: Request,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
@@ -168,23 +212,38 @@ async def oauth_callback(
         )
     if error:
         msg = error_description or error
-        return RedirectResponse(
+        resp = RedirectResponse(
             oauth.frontend_bind_redirect(provider=p.key, ok=False, error=msg),
             status_code=302,
         )
+        _clear_bind_cookie(resp)
+        return resp
     if not code or not state:
-        return RedirectResponse(
+        resp = RedirectResponse(
             oauth.frontend_bind_redirect(provider=p.key, ok=False, error="missing_code_or_state"),
             status_code=302,
         )
+        _clear_bind_cookie(resp)
+        return resp
+    bind_cookie = request.cookies.get(OAUTH_BIND_COOKIE)
     try:
-        _out, login = await oauth.complete_oauth_bind(db, provider=p, code=code, state=state)
+        _out, login = await oauth.complete_oauth_bind(
+            db,
+            provider=p,
+            code=code,
+            state=state,
+            bind_cookie=bind_cookie,
+        )
     except Exception as exc:  # noqa: BLE001
-        return RedirectResponse(
+        resp = RedirectResponse(
             oauth.frontend_bind_redirect(provider=p.key, ok=False, error=str(exc)),
             status_code=302,
         )
-    return RedirectResponse(
+        _clear_bind_cookie(resp)
+        return resp
+    resp = RedirectResponse(
         oauth.frontend_bind_redirect(provider=p.key, ok=True, login=login),
         status_code=302,
     )
+    _clear_bind_cookie(resp)
+    return resp

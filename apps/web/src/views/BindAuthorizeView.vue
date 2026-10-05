@@ -5,7 +5,7 @@ import api from '@/api/client'
 import type { UserOut } from '@/api/types'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useAuthStore } from '@/stores/auth'
-import { getProvider, type BindField } from '@/utils/bindProviders'
+import { getProvider } from '@/utils/bindProviders'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -89,8 +89,7 @@ async function confirmUnbind() {
   busy.value = true
   err.value = ''
   try {
-    const payload: Partial<Record<BindField, null>> = { [p.field]: null }
-    const { data } = await api.patch<UserOut>('/auth/me', payload)
+    const { data } = await api.delete<UserOut>(`/auth/oauth/${p.key}/bind`)
     auth.user = data
     ok.value = '已解除绑定'
   } catch (e: unknown) {

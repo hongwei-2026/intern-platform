@@ -237,7 +237,6 @@ async function saveProfile() {
     const { data } = await api.patch<UserOut>('/auth/me', {
       display_name: form.value.display_name || null,
       school: form.value.school || null,
-      member_no: form.value.member_no || null,
       bio: form.value.bio || null,
       phone: form.value.phone || null,
       major: form.value.major || null,
@@ -783,7 +782,7 @@ function consumeBindResult() {
                 </label>
                 <label>
                   学号 / 工号
-                  <input v-model="form.member_no" />
+                  <input v-model="form.member_no" disabled title="学号/工号不可手填修改" />
                 </label>
                 <label>
                   所在城市

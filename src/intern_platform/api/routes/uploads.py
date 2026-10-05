@@ -36,7 +36,6 @@ MAX_FILE_BYTES = 20 * 1024 * 1024
 FILE_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".zip"}
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-PUBLIC_MEDIA = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm")
 IMAGE_MAGIC = (
     (b"\xff\xd8\xff", ".jpg"),
     (b"\x89PNG\r\n\x1a\n", ".png"),
@@ -209,14 +208,12 @@ def get_uploaded_file(
         raise HTTPException(status_code=404, detail="文件不存在")
 
     lower = filename.lower()
-    public_media = lower.endswith(PUBLIC_MEDIA)
-    if not public_media:
-        viewer = _viewer(db, credentials, access_token)
-        if viewer is None:
-            raise HTTPException(status_code=401, detail="请先登录后再下载")
-        owner_id = int(user_part[1:])
-        if not _can_download(db, viewer, owner_id):
-            raise HTTPException(status_code=403, detail="无权下载该文件")
+    viewer = _viewer(db, credentials, access_token)
+    if viewer is None:
+        raise HTTPException(status_code=401, detail="请先登录后再下载")
+    owner_id = int(user_part[1:])
+    if not _can_download(db, viewer, owner_id):
+        raise HTTPException(status_code=403, detail="无权下载该文件")
 
     media = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     disposition = "inline"
@@ -235,11 +232,10 @@ def get_uploaded_file(
         elif lower.endswith(".zip"):
             media = "application/zip"
         disposition = "attachment"
-    headers = {"X-Content-Type-Options": "nosniff"}
-    if public_media:
-        headers["Cache-Control"] = "public, max-age=3600"
-    else:
-        headers["Cache-Control"] = "private, no-store"
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+    }
     return FileResponse(
         path,
         media_type=media,

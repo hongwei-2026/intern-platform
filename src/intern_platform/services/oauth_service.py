@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 from jose import JWTError, jwt
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from intern_platform.config import PROJECT_ROOT, Settings, get_settings
@@ -25,6 +30,11 @@ from intern_platform.services.oauth_providers import (
     fetch_profile,
     fetch_profile_with_pat,
 )
+
+# 单进程一次性 state 消费（云端单 API 容器足够；多副本需共享存储）
+_used_states: dict[str, float] = {}
+_used_lock = threading.Lock()
+_STATE_TTL_SEC = 600
 
 OAUTH_CLIENTS_PATH = PROJECT_ROOT / "data" / "oauth_clients.json"
 
@@ -191,9 +201,35 @@ def create_oauth_state(*, user_id: int, provider: str) -> str:
         "typ": "oauth_bind",
         "sub": str(user_id),
         "provider": provider,
+        "jti": uuid.uuid4().hex,
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def create_oauth_bind_cookie(*, user_id: int) -> str:
+    """发起绑定时写入的短时会话 cookie，回调时与 state.sub 交叉校验。"""
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    payload = {
+        "typ": "oauth_bind_sess",
+        "sub": str(user_id),
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def parse_oauth_bind_cookie(cookie: str | None) -> int:
+    if not cookie:
+        raise ValueError("缺少绑定会话，请重新从本站发起授权")
+    settings = get_settings()
+    try:
+        payload = jwt.decode(cookie, settings.secret_key, algorithms=[ALGORITHM])
+    except JWTError as exc:
+        raise ValueError("绑定会话无效或已过期，请重新发起授权") from exc
+    if payload.get("typ") != "oauth_bind_sess":
+        raise ValueError("绑定会话无效")
+    return int(payload["sub"])
 
 
 def parse_oauth_state(state: str) -> dict[str, Any]:
@@ -209,6 +245,21 @@ def decode_oauth_state(state: str) -> dict[str, Any]:
         return jwt.decode(state, settings.secret_key, algorithms=[ALGORITHM])
     except JWTError as exc:
         raise ValueError("OAuth state 无效或已过期") from exc
+
+
+def consume_oauth_state(state: str) -> dict[str, Any]:
+    """解析并一次性消费 state，防止重放。"""
+    payload = parse_oauth_state(state)
+    key = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _used_lock:
+        stale = [k for k, ts in _used_states.items() if now - ts > _STATE_TTL_SEC]
+        for k in stale:
+            _used_states.pop(k, None)
+        if key in _used_states:
+            raise ValueError("OAuth state 已使用，请重新发起授权")
+        _used_states[key] = now
+    return payload
 
 
 def build_authorize_url(provider: OAuthProvider, state: str, settings: Settings | None = None) -> str:
@@ -255,6 +306,16 @@ def bind_login(
     provider: str | None = None,
     avatar_url: str | None = None,
 ) -> UserOut:
+    login = (login or "").strip()
+    if not login:
+        raise ValueError("平台账号为空，无法绑定")
+    col = getattr(User, field, None)
+    if col is None:
+        raise ValueError("不支持的绑定字段")
+    taken = db.scalar(select(User).where(col == login, User.id != user.id))
+    if taken is not None:
+        label = provider or field
+        raise ValueError(f"该{label}账号已绑定其他用户")
     setattr(user, field, login)
     if provider:
         _write_avatar(user, provider, avatar_url)
@@ -280,11 +341,15 @@ async def complete_oauth_bind(
     provider: OAuthProvider,
     code: str,
     state: str,
+    bind_cookie: str | None = None,
 ) -> tuple[UserOut, str]:
-    payload = parse_oauth_state(state)
+    payload = consume_oauth_state(state)
     if payload.get("provider") != provider.key:
         raise ValueError("OAuth state 与平台不匹配")
     user_id = int(payload["sub"])
+    cookie_uid = parse_oauth_bind_cookie(bind_cookie)
+    if cookie_uid != user_id:
+        raise ValueError("绑定会话与授权发起人不一致")
     user = db.get(User, user_id)
     if user is None:
         raise LookupError("用户不存在")

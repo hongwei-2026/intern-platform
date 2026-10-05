@@ -55,14 +55,10 @@ class TokenResponse(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
+    """个人资料可改字段。平台账号 ID / 学号等身份字段禁止手填，仅走 OAuth 绑定。"""
+
     display_name: str | None = None
     school: str | None = None
-    github_id: str | None = None
-    gitea_id: str | None = None
-    gitcode_id: str | None = None
-    gitee_id: str | None = None
-    gitlink_id: str | None = None
-    member_no: str | None = None
     bio: str | None = None
     phone: str | None = None
     major: str | None = None
