@@ -337,7 +337,7 @@ def main() -> int:
     print()
     print(f"===== 结果：{PASS} 项通过，{FAIL} 项失败 =====")
     if FAIL == 0:
-        print("这几条安全修复在本地是生效的。")
+        print(f"这几条安全修复在{label}是生效的。")
     else:
         print("有失败项：把上面「失败」那几行发我。")
     print()
