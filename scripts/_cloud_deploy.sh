@@ -40,6 +40,20 @@ PY
 cp -a "$ENV_BAK" "${NEW}/.env"
 chmod +x "${NEW}/docker/api-entrypoint.sh" || true
 
+# Preserve TLS certs across deploys (not in zip)
+CERT_SRC=""
+if [[ -d "${TARGET}/certs" ]]; then
+  CERT_SRC="${TARGET}/certs"
+elif [[ -d "${PREV}/certs" ]]; then
+  CERT_SRC="${PREV}/certs"
+elif [[ -d "${PREV}.old/certs" ]]; then
+  CERT_SRC="${PREV}.old/certs"
+fi
+if [[ -n "$CERT_SRC" ]]; then
+  mkdir -p "${NEW}/certs"
+  cp -a "${CERT_SRC}/." "${NEW}/certs/"
+fi
+
 # Keep previous good tree if current is broken flat export
 if [[ ! -d "${TARGET}/src" && -d "${PREV}/src" ]]; then
   rm -rf "$TARGET"
