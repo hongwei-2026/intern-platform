@@ -1094,14 +1094,21 @@ async function openOrg() {
   if (!orgForm.value.name.trim() || !orgForm.value.admin_email.trim()) return
   busy.value = true
   try {
-    const { data } = await api.post<{ id: number; invite_code?: string | null }>('/communities', {
+    const { data } = await api.post<{
+      id: number
+      invite_code?: string | null
+      admin_initial_password?: string | null
+    }>('/communities', {
       name: orgForm.value.name.trim(),
       slug: orgForm.value.slug.trim() || `org-${Date.now()}`,
       description: orgForm.value.description || null,
       admin_name: orgForm.value.admin_name.trim(),
       admin_email: orgForm.value.admin_email.trim(),
     })
-    created.value = `已开通「${orgForm.value.name.trim()}」，社区账号 ${orgForm.value.admin_name || '管理员'} ${orgForm.value.admin_email.trim()}，初始密码 Demo@123456。用学生入口选「组织」登录。${data.invite_code ? `导师邀请码 ${data.invite_code}。` : ''}`
+    const pw = data.admin_initial_password
+      ? `初始密码 ${data.admin_initial_password}（只显示一次，请立刻交给对方）`
+      : '该邮箱已有组织账号，未重置密码'
+    created.value = `已开通「${orgForm.value.name.trim()}」，社区账号 ${orgForm.value.admin_name || '管理员'} ${orgForm.value.admin_email.trim()}，${pw}。用学生入口选「组织」登录。${data.invite_code ? `导师邀请码 ${data.invite_code}。` : ''}`
     orgForm.value = { name: '', slug: '', description: '', admin_name: '', admin_email: '' }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '开通失败'
@@ -1544,7 +1551,7 @@ onMounted(load)
     <section v-else class="panel settings">
       <article>
         <h2>开通组织</h2>
-        <p>开通后会同时创建该社区的组织账号，用来收学生的奖励申请。初始密码是 Demo@123456，从学生入口选「组织」登录。</p>
+        <p>开通后会同时创建该社区的组织账号，用来收学生的奖励申请。系统会生成一次性随机初始密码（只显示一次），从学生入口选「组织」登录。</p>
         <form class="stack" @submit.prevent="openOrg">
           <input v-model="orgForm.name" placeholder="组织名称" required />
           <input v-model="orgForm.slug" placeholder="英文标识，可空" />

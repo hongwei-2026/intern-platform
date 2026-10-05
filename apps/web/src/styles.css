@@ -83,8 +83,15 @@ a:hover {
   z-index: 50;
   height: var(--nav-h);
   background: rgba(255, 255, 255, 0.96);
+  border: 0;
   border-bottom: 1px solid var(--border);
+  box-shadow: none;
   backdrop-filter: blur(8px);
+}
+
+/* 登录 / 注册页：整站顶栏与页脚已隐藏，主区铺满 */
+.site.is-auth-page .site-main.is-auth-main {
+  min-height: 100vh;
 }
 
 .topnav-inner {

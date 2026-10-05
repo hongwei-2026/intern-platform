@@ -22,6 +22,7 @@ from intern_platform.services.message_codec import (
     unpack_message,
 )
 from intern_platform.services.notification_service import NotificationService
+from intern_platform.services.upload_urls import require_safe_upload_url
 
 
 def community_admin_ids(session: Session, community_id: int) -> list[int]:
@@ -145,12 +146,17 @@ class MessageService:
                 raise ValueError("当前尚未进入开发阶段（需导师通过并预留名额后）")
             design = (body.design_doc_url or "").strip() or "暂无"
             code = (body.code_url or "").strip() or "暂无"
+            attachment = require_safe_upload_url(
+                (body.attachment_url or "").strip() or None,
+                field="进展附件",
+                owner_user_id=auth.id,
+            )
             packed = pack_deliverable_message(
                 kind,
                 text=body.body,
                 design_doc_url=design,
                 code_url=code,
-                attachment_url=(body.attachment_url or "").strip(),
+                attachment_url=attachment or "",
                 attachment_name=(body.attachment_name or "").strip(),
             )
         elif kind == "reward":
@@ -162,7 +168,11 @@ class MessageService:
                 "completed",
             ):
                 raise ValueError("导师验收通过后才能申请奖励")
-            attachment = (body.attachment_url or "").strip()
+            attachment = require_safe_upload_url(
+                (body.attachment_url or "").strip() or None,
+                field="奖励附件",
+                owner_user_id=auth.id,
+            )
             if not attachment:
                 raise ValueError("请上传 ZIP，证明相关 Issue 和 PR 已经关闭")
             prior = self.session.scalars(
@@ -248,7 +258,12 @@ class MessageService:
         return self._to_out(msg)
 
     def decide_reward(
-        self, auth: AuthUser, application_id: int, decision: str, note: str | None
+        self,
+        auth: AuthUser,
+        application_id: int,
+        decision: str,
+        note: str | None,
+        ledger: LedgerRequestContext | None = None,
     ) -> None:
         """社区通过或驳回学生的奖励申请，并通知学生。"""
         app = self.session.get(Application, application_id)
@@ -276,6 +291,7 @@ class MessageService:
                 break
         if target is None:
             raise LookupError("没有待处理的奖励申请")
+        before = {"decision": "pending", "message_id": target.id}
         payload = {
             "text": str(parsed.get("text") or ""),
             "design_doc_url": str(parsed.get("design_doc_url") or ""),
@@ -296,6 +312,20 @@ class MessageService:
             kind="app_reward_result",
             project_id=app.project_id,
             application_id=app.id,
+        )
+        self.audits.create(
+            actor_id=auth.id,
+            actor_role="community_admin",
+            action="application.reward_decision",
+            resource_type="application",
+            resource_id=app.id,
+            before=before,
+            after={"decision": decision, "note": reason, "message_id": target.id},
+            outcome="SUCCESS",
+            request_id=ledger.request_id if ledger else None,
+            trace_id=ledger.trace_id if ledger else None,
+            ip=ledger.ip if ledger else None,
+            user_agent=ledger.user_agent if ledger else None,
         )
         self.session.commit()
 

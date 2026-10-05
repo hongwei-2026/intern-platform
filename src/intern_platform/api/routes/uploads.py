@@ -215,8 +215,7 @@ def get_uploaded_file(
         if viewer is None:
             raise HTTPException(status_code=401, detail="请先登录后再下载")
         owner_id = int(user_part[1:])
-        staff = viewer.has_role("mentor", "community_admin", "committee")
-        if viewer.id != owner_id and not staff:
+        if not _can_download(db, viewer, owner_id):
             raise HTTPException(status_code=403, detail="无权下载该文件")
 
     media = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -271,3 +270,58 @@ def _viewer(
     if user is None:
         return None
     return AuthUser(user=user, roles=load_user_roles(db, user.id))
+
+
+def _can_download(db: Session, viewer: AuthUser, owner_id: int) -> bool:
+    """本人 / 组委会 / 名下课题导师 / 同社区管理员可下载。"""
+    if viewer.id == owner_id:
+        return True
+    if viewer.has_role("committee"):
+        return True
+
+    from sqlalchemy import select
+
+    from intern_platform.models.application import Application
+    from intern_platform.models.project import Project
+
+    if viewer.has_role("mentor"):
+        linked = db.scalar(
+            select(Application.id)
+            .join(Project, Project.id == Application.project_id)
+            .where(
+                Project.mentor_id == viewer.id,
+                Application.student_id == owner_id,
+            )
+            .limit(1)
+        )
+        if linked is not None:
+            return True
+
+    community_ids = viewer.community_ids_for("community_admin")
+    if community_ids:
+        linked = db.scalar(
+            select(Application.id)
+            .join(Project, Project.id == Application.project_id)
+            .where(
+                Project.community_id.in_(community_ids),
+                Application.student_id == owner_id,
+            )
+            .limit(1)
+        )
+        if linked is not None:
+            return True
+        # 同社区其他管理员上传的结项材料等
+        from intern_platform.models.role import Role, UserRole
+
+        admin_role = db.scalar(select(Role).where(Role.code == "community_admin"))
+        if admin_role is not None:
+            peer = db.scalar(
+                select(UserRole.id).where(
+                    UserRole.user_id == owner_id,
+                    UserRole.role_id == admin_role.id,
+                    UserRole.community_id.in_(community_ids),
+                ).limit(1)
+            )
+            if peer is not None:
+                return True
+    return False

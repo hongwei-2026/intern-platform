@@ -87,9 +87,10 @@ def change_password(
     body: ChangePasswordRequest,
     auth: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> dict[str, bool]:
     try:
-        AuthService(db).change_password(auth, body)
+        AuthService(db).change_password(auth, body, ledger)
     except PermissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
@@ -107,3 +108,5 @@ def grant_role(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

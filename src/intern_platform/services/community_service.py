@@ -25,11 +25,12 @@ from intern_platform.schemas.business import (
 )
 
 
-def _gen_invite_code(name: str) -> str:
-    ascii_prefix = "".join(ch for ch in name.upper() if ("A" <= ch <= "Z") or ("0" <= ch <= "9"))
-    prefix = (ascii_prefix[:6] or "ORG").ljust(3, "X")[:6]
-    suffix = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
-    return f"{prefix}-{suffix}"
+def _gen_invite_code(_name: str = "") -> str:
+    """足够长的随机邀请码，不可由 slug 推导。"""
+    alphabet = string.ascii_uppercase + string.digits
+    left = "".join(secrets.choice(alphabet) for _ in range(4))
+    right = "".join(secrets.choice(alphabet) for _ in range(4))
+    return f"{left}-{right}"
 
 
 class CommunityService:
@@ -132,11 +133,8 @@ class CommunityService:
             self.session.flush()
             created = True
         else:
-            # 已有账号：绑定角色；可选重置密码（便于管理员代建）
-            if password:
-                user.password_hash = hash_password(password)
-            if display_name.strip():
-                user.display_name = display_name.strip()
+            # 已有账号：只加导师角色，绝不改密码/显示名
+            pass
 
         exists = self.session.scalar(
             select(UserRole).where(
@@ -201,22 +199,42 @@ class CommunityService:
         self.session.add(community)
         self.session.flush()
         self.session.add(CommunityExtension(community_id=community.id))
+        initial_password: str | None = None
         if auth.has_role("committee") and (body.admin_email or "").strip():
             community.status = "approved"
             community.reviewed_by = auth.id
             if not community.invite_code:
                 community.invite_code = _gen_invite_code(community.name)
-            self._bind_community_admin(
+            initial_password = self._bind_community_admin(
                 community,
                 email=body.admin_email or "",
                 display_name=body.admin_name or "",
             )
+            self.audits.create(
+                actor_id=auth.id,
+                actor_role="committee",
+                action="community.create",
+                resource_type="community",
+                resource_id=community.id,
+                after={
+                    "name": community.name,
+                    "slug": community.slug,
+                    "admin_email": (body.admin_email or "").strip().lower(),
+                    "invite_code": community.invite_code,
+                    "admin_provisioned": bool(initial_password),
+                },
+                outcome="SUCCESS",
+            )
         self.session.commit()
         self.session.refresh(community)
+        if initial_password:
+            setattr(community, "_admin_initial_password", initial_password)
         return community
 
-    def _bind_community_admin(self, community: Community, *, email: str, display_name: str) -> None:
-        """组委会开通社区时同时建立该社区的组织账号。"""
+    def _bind_community_admin(
+        self, community: Community, *, email: str, display_name: str
+    ) -> str | None:
+        """组委会开通社区时同时建立该社区的组织账号；新建时返回一次性初始密码。"""
         from intern_platform.models.user import User
 
         email_n = email.strip().lower()
@@ -228,16 +246,27 @@ class CommunityService:
         user = self.session.scalar(select(User).where(User.email == email_n))
         if user is not None:
             self._assert_role_compatible(user.id, "community_admin")
+        initial_password: str | None = None
         if user is None:
+            initial_password = secrets.token_urlsafe(12)
             user = User(
                 email=email_n,
-                password_hash=hash_password("Demo@123456"),
+                password_hash=hash_password(initial_password),
                 display_name=display_name.strip() or email_n.split("@")[0],
                 school="华中科技大学",
                 auth_provider="local",
             )
             self.session.add(user)
             self.session.flush()
+            self.audits.create(
+                actor_id=None,
+                actor_role="system",
+                action="community.admin_provision",
+                resource_type="user",
+                resource_id=user.id,
+                after={"email": email_n, "community_id": community.id},
+                outcome="SUCCESS",
+            )
         exists = self.session.scalar(
             select(UserRole).where(
                 UserRole.user_id == user.id,
@@ -250,6 +279,7 @@ class CommunityService:
                 UserRole(user_id=user.id, role_id=admin_role.id, community_id=community.id)
             )
         community.applicant_user_id = user.id
+        return initial_password
 
     def update_profile(
         self,
@@ -354,11 +384,6 @@ class CommunityService:
                     role_code="community_admin",
                     community_id=community.id,
                 )
-                self._ensure_role(
-                    user_id=community.applicant_user_id,
-                    role_code="community_admin",
-                    community_id=None,
-                )
         after = {
             "status": community.status,
             "comment": body.comment,
@@ -418,10 +443,21 @@ class CommunityService:
         community = self.get_by_invite_code(body.invite_code)
         if community is None or community.status != "approved":
             raise LookupError("组织码无效或社区未通过入驻")
-        role_code = body.as_role
+        # 邀请码仅用于导师加入；组织管理员只能由组委会开通/审核绑定
+        if body.as_role != "mentor":
+            raise ValueError("邀请码仅用于导师加入，组织管理员请联系组委会开通")
+        role_code = "mentor"
         self._assert_role_compatible(auth.id, role_code)
         self._ensure_role(user_id=auth.id, role_code=role_code, community_id=community.id)
-        self._ensure_role(user_id=auth.id, role_code=role_code, community_id=None)
+        self.audits.create(
+            actor_id=auth.id,
+            actor_role="mentor",
+            action="community.join_invite",
+            resource_type="community",
+            resource_id=community.id,
+            after={"role": role_code},
+            outcome="SUCCESS",
+        )
         self.session.commit()
         return CommunityJoinOut(
             community_id=community.id,

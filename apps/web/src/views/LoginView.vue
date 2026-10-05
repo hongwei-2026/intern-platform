@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
+import AuthShell from '@/components/AuthShell.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -8,7 +9,7 @@ const router = useRouter()
 const route = useRoute()
 
 type Portal = 'student' | 'mentor' | 'org'
-const portal = ref<Portal>('student')
+const portal = ref<Portal | null>(null)
 const email = ref('')
 const password = ref('')
 const error = ref('')
@@ -17,21 +18,46 @@ watch(
   () => route.query.role,
   (v) => {
     if (v === 'mentor' || v === 'org' || v === 'student') portal.value = v
-    else portal.value = 'student'
+    else portal.value = null
   },
   { immediate: true },
 )
 
-const title = computed(() => {
+const choosing = computed(() => portal.value === null)
+
+const shellVariant = computed(() => portal.value || 'student')
+
+const brandTitle = computed(() => {
+  if (choosing.value) return '欢迎回来'
+  if (portal.value === 'mentor') return '导师工作台'
+  if (portal.value === 'org') return '组织工作台'
+  return '学生入口'
+})
+
+const brandLead = computed(() => {
+  if (choosing.value) return '先选择身份，再进入对应登录页。账号体系统一，入口分开。'
+  if (portal.value === 'mentor') return '管理课题、审核申请与结项材料。'
+  if (portal.value === 'org') return '维护社区主页、邀请导师、创建并分配项目。'
+  return '浏览项目、提交申请，跟踪三级审核与结项进度。'
+})
+
+const brandPoints = computed(() => {
+  if (choosing.value) return ['学生可自助注册', '导师需邀请码，组织由组委会开通']
+  if (portal.value === 'mentor') return ['使用社区发放的邀请码注册', '登录后进入导师工作台']
+  if (portal.value === 'org') return ['组织账号由组委会开通', '登录后进入组织工作台']
+  return ['没有账号可先注册', '邮箱 + 密码即可注册']
+})
+
+const formTitle = computed(() => {
   if (portal.value === 'mentor') return '导师登录'
   if (portal.value === 'org') return '组织登录'
   return '学生登录'
 })
 
-const hint = computed(() => {
-  if (portal.value === 'mentor') return '登录后进入导师工作台。新导师请使用邀请码注册加入社区。'
-  if (portal.value === 'org') return '社区管理员：维护主页、邀请导师、创建并分配项目。'
-  return '学生登录后可浏览项目、提交申请并跟踪三级审核进度。'
+const formHint = computed(() => {
+  if (portal.value === 'mentor') return '登录后进入导师工作台。新导师请使用邀请码注册。'
+  if (portal.value === 'org') return '社区管理员入口。账号由组委会开通。'
+  return '登录后可浏览项目、提交申请并跟踪审核进度。'
 })
 
 onMounted(() => {
@@ -41,16 +67,24 @@ onMounted(() => {
   sessionStorage.removeItem('intern_platform_auth_notice')
 })
 
-function setPortal(p: Portal) {
+function choosePortal(p: Portal) {
   portal.value = p
+  error.value = ''
   router.replace({ query: { ...route.query, role: p } })
+}
+
+function backToChoose() {
+  portal.value = null
+  error.value = ''
+  const q = { ...route.query } as Record<string, string | string[]>
+  delete q.role
+  router.replace({ query: q })
 }
 
 async function onSubmit() {
   error.value = ''
   try {
     await auth.login(email.value.trim(), password.value)
-    // 导师账号一律进导师台，绝不落到组织工作台
     if (auth.hasRole('mentor') && !auth.hasRole('community_admin')) {
       router.push('/mentor')
       return
@@ -61,7 +95,6 @@ async function onSubmit() {
         router.push('/mentor')
         return
       }
-      // 组织侧不应被带到学生申请相关页
       if (auth.isStaff && (redirect.includes('/student/') || redirect.includes('tab=applications'))) {
         router.push(auth.portalHome())
         return
@@ -77,41 +110,41 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="page narrow">
-    <div class="auth-panel">
-      <div class="auth-tabs triple">
-        <button
-          type="button"
-          class="auth-tab student"
-          :class="{ active: portal === 'student' }"
-          @click="setPortal('student')"
-        >
-          学生
+  <AuthShell
+    :variant="shellVariant"
+    :title="brandTitle"
+    :lead="brandLead"
+    :points="brandPoints"
+  >
+    <template #head>
+      <h2>{{ choosing ? '选择账户类型' : formTitle }}</h2>
+      <p>{{ choosing ? '请先选择身份，再进入对应登录页。' : formHint }}</p>
+    </template>
+
+    <div v-if="choosing">
+      <div class="role-grid">
+        <button type="button" class="role-card" @click="choosePortal('student')">
+          <strong>学生</strong>
+          <span>浏览项目、提交申请、跟踪审核与结项</span>
         </button>
-        <button
-          type="button"
-          class="auth-tab mentor"
-          :class="{ active: portal === 'mentor' }"
-          @click="setPortal('mentor')"
-        >
-          导师
+        <button type="button" class="role-card" @click="choosePortal('mentor')">
+          <strong>导师</strong>
+          <span>管理课题、审核申请与结项材料</span>
         </button>
-        <button
-          type="button"
-          class="auth-tab org"
-          :class="{ active: portal === 'org' }"
-          @click="setPortal('org')"
-        >
-          组织
+        <button type="button" class="role-card" @click="choosePortal('org')">
+          <strong>组织</strong>
+          <span>社区管理员维护主页、邀请导师、分配项目</span>
         </button>
       </div>
+    </div>
 
-      <h1 class="page-title" style="font-size: 1.35rem">{{ title }}</h1>
-      <p class="page-desc">{{ hint }}</p>
+    <form v-else @submit.prevent="onSubmit">
+      <button type="button" class="back-choose" @click="backToChoose">← 重新选择账户类型</button>
 
-      <form class="form" @submit.prevent="onSubmit">
-        <label>
-          邮箱
+      <div class="field-block">
+        <span class="block-label">账号登录</span>
+        <label class="field">
+          <span>邮箱</span>
           <input
             v-model="email"
             type="email"
@@ -120,8 +153,8 @@ async function onSubmit() {
             placeholder="name@hust.edu.cn"
           />
         </label>
-        <label>
-          密码
+        <label class="field">
+          <span>密码</span>
           <input
             v-model="password"
             type="password"
@@ -130,39 +163,29 @@ async function onSubmit() {
             placeholder="请输入密码"
           />
         </label>
-        <p v-if="error" class="error">{{ error }}</p>
-        <button
-          class="btn"
-          :class="portal === 'student' ? 'student' : 'org'"
-          type="submit"
-          :disabled="auth.loading"
-          style="width: 100%; border-radius: 999px"
-        >
+      </div>
+
+      <p v-if="error" class="error">{{ error }}</p>
+
+      <div class="auth-actions">
+        <button class="submit-btn" type="submit" :disabled="auth.loading">
           {{ auth.loading ? '登录中…' : '登录' }}
         </button>
-      </form>
+        <RouterLink v-if="portal === 'student'" class="ghost-btn" to="/register">注册</RouterLink>
+        <RouterLink v-else-if="portal === 'mentor'" class="ghost-btn" to="/register/mentor">邀请码注册</RouterLink>
+      </div>
+    </form>
 
-      <p class="muted" style="margin-top: 0.75rem">
-        <template v-if="portal === 'mentor'">
-          新导师？
-          <RouterLink to="/register/mentor">使用邀请码注册</RouterLink>
-        </template>
-        <template v-else-if="portal === 'student'">
-          <RouterLink to="/register">注册学生账号</RouterLink>
-        </template>
-        <template v-else>组织账号由组委会开通</template>
-      </p>
-    </div>
-  </div>
+    <template v-if="!choosing" #foot>
+      <template v-if="portal === 'org'">组织账号由组委会开通，无需自行注册</template>
+      <template v-else-if="portal === 'student'">
+        还没有账号？
+        <RouterLink to="/register">立即注册</RouterLink>
+      </template>
+      <template v-else>
+        新导师？
+        <RouterLink to="/register/mentor">使用邀请码注册</RouterLink>
+      </template>
+    </template>
+  </AuthShell>
 </template>
-
-<style scoped>
-.auth-tabs.triple {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-}
-.auth-tab.mentor.active {
-  background: #ea580c;
-  color: #fff;
-}
-</style>

@@ -15,6 +15,7 @@ class AuditLog(CreatedAtMixin, Base):
     __tablename__ = "audit_logs"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_audit_logs_idempotency_key"),
+        UniqueConstraint("seq_no", name="uq_audit_logs_seq_no"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

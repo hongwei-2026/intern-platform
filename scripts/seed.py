@@ -159,7 +159,8 @@ def _upsert_community(
         row.mirror_doc_url = mirror_doc_url
         row.logo_url = logo_url
         row.tags = tags
-        row.invite_code = row.invite_code or invite_code
+        # 演示种子始终同步邀请码（轮换旧的 {SLUG}-DEMO 可预测码）
+        row.invite_code = invite_code
     return row
 
 
@@ -339,12 +340,28 @@ def seed() -> None:
                 session.add(user)
                 session.flush()
             user_by_role[item["role_code"]] = user
-            _ensure_role_binding(
-                session,
-                user_id=user.id,
-                role=role_by_code[item["role_code"]],
-                community_id=None,
+            # student / committee 可无社区绑定；mentor / community_admin 只绑具体社区
+            if item["role_code"] in ("student", "committee"):
+                _ensure_role_binding(
+                    session,
+                    user_id=user.id,
+                    role=role_by_code[item["role_code"]],
+                    community_id=None,
+                )
+
+        # 清掉历史遗留的「空 community_id」组织/导师角色，避免全局管理员
+        for code in ("community_admin", "mentor"):
+            role = role_by_code[code]
+            orphans = list(
+                session.scalars(
+                    select(UserRole).where(
+                        UserRole.role_id == role.id,
+                        UserRole.community_id.is_(None),
+                    )
+                ).all()
             )
+            for row in orphans:
+                session.delete(row)
 
         admin = user_by_role["community_admin"]
         mentor = user_by_role["mentor"]
@@ -352,13 +369,14 @@ def seed() -> None:
         student = user_by_role["student"]
 
         # ----- 原有演示社区（保留） -----
+        # 邀请码故意不可由 slug 推导（勿再用 {SLUG}-DEMO）
         community = _upsert_community(
             session,
             slug="kernel",
             name="内核社区",
             description="聚焦操作系统内核、驱动与性能相关开源课题，适合系统方向同学深入实践。",
             homepage_url="https://hust.openatom.club/",
-            invite_code="KERNEL-DEMO",
+            invite_code="H4KX-9M2Q",
             logo_url="/logos/kernel.svg",
             tags='["操作系统","驱动","C语言"]',
             applicant_id=admin.id,
@@ -369,9 +387,6 @@ def seed() -> None:
         )
         _ensure_role_binding(
             session, user_id=mentor.id, role=role_by_code["mentor"], community_id=community.id
-        )
-        _ensure_role_binding(
-            session, user_id=mentor.id, role=role_by_code["mentor"], community_id=None
         )
         _ensure_extension(session, community.id, KERNEL_SCHEMA)
         project = _upsert_first_project(
@@ -410,7 +425,7 @@ def seed() -> None:
             description="围绕校园镜像站与软件源运维，训练同步策略、监控与自动化能力。",
             homepage_url="https://mirrors.hust.edu.cn/",
             mirror_doc_url="https://mirrors.hust.edu.cn/",
-            invite_code="MIRROR-DEMO",
+            invite_code="B7WP-3NLD",
             logo_url="/logos/hust-mirror.svg",
             tags='["镜像","运维开发","Shell脚本"]',
             applicant_id=admin.id,
@@ -436,7 +451,7 @@ def seed() -> None:
                 "name": "技术文档社区",
                 "description": "面向开源文档、教程与本地化贡献，适合写作与知识整理方向的同学。",
                 "homepage_url": "https://hust.openatom.club/",
-                "invite_code": "DOCS-DEMO",
+                "invite_code": "C8QT-5RVK",
                 "logo_url": "/logos/docs.svg",
                 "tags": '["文档","Markdown","Git"]',
                 "schema": KERNEL_SCHEMA,
@@ -454,7 +469,7 @@ def seed() -> None:
                 "name": "开发者工具社区",
                 "description": "围绕 CI、脚本、脚手架与工程效率工具，承接可落地的工程化实习课题。",
                 "homepage_url": "https://hust.openatom.club/",
-                "invite_code": "TOOLS-DEMO",
+                "invite_code": "D2MH-6XPL",
                 "logo_url": "/logos/devtools.svg",
                 "tags": '["运维开发","Shell脚本","Docker"]',
                 "schema": KERNEL_SCHEMA,
@@ -472,7 +487,7 @@ def seed() -> None:
                 "name": "AI 开源实验室",
                 "description": "探索开源模型推理、评测与轻量应用落地，适合有一定 Python / 机器学习基础的同学。",
                 "homepage_url": "https://hust.openatom.club/",
-                "invite_code": "AILAB-DEMO",
+                "invite_code": "E9NS-4WQJ",
                 "logo_url": "/logos/ailab.svg",
                 "tags": '["人工智能","深度学习","Python"]',
                 "schema": KERNEL_SCHEMA,
@@ -492,7 +507,7 @@ def seed() -> None:
                 "description": "openEuler 是开放原子开源基金会旗下的开源操作系统，面向数字基础设施，适合系统与内核方向实践。",
                 "homepage_url": "https://www.openeuler.org/zh/",
                 "gitea_org_url": "https://gitee.com/openeuler",
-                "invite_code": "EULER-DEMO",
+                "invite_code": "F3YR-8KBT",
                 "logo_url": "/logos/openeuler.svg",
                 "tags": '["操作系统","编译器","嵌入式"]',
                 "schema": KERNEL_SCHEMA,
@@ -511,7 +526,7 @@ def seed() -> None:
                 "description": "openGauss 是面向企业级场景的开源关系型数据库，适合数据库内核、工具与文档方向贡献。",
                 "homepage_url": "https://opengauss.org/zh/",
                 "gitea_org_url": "https://gitee.com/opengauss",
-                "invite_code": "GAUSS-DEMO",
+                "invite_code": "G6ZC-1VHN",
                 "logo_url": "/logos/opengauss.svg",
                 "tags": '["数据库","运维开发","C语言"]',
                 "schema": KERNEL_SCHEMA,
@@ -530,7 +545,7 @@ def seed() -> None:
                 "description": "昇思 MindSpore 是面向全场景的开源深度学习框架，适合人工智能算法与工程化实习课题。",
                 "homepage_url": "https://www.mindspore.cn/",
                 "gitea_org_url": "https://gitee.com/mindspore",
-                "invite_code": "MS-DEMO",
+                "invite_code": "J5LD-7PCM",
                 "logo_url": "/logos/mindspore.svg",
                 "tags": '["人工智能","深度学习","Python"]',
                 "schema": KERNEL_SCHEMA,
@@ -549,7 +564,7 @@ def seed() -> None:
                 "description": "RT-Thread 是国产开源实时操作系统，面向物联网与嵌入式设备，适合驱动与组件开发实践。",
                 "homepage_url": "https://www.rt-thread.org/",
                 "gitea_org_url": "https://gitee.com/rtthread",
-                "invite_code": "RTT-DEMO",
+                "invite_code": "K1AF-0QWE",
                 "logo_url": "/logos/rtthread.svg",
                 "tags": '["实时操作系统","嵌入式","C语言"]',
                 "schema": KERNEL_SCHEMA,

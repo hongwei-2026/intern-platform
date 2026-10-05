@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from intern_platform.db.session import engine, get_db
 from intern_platform.dependencies.auth import AuthUser, get_current_user
+from intern_platform.dependencies.ledger import LedgerRequestContext, get_ledger_context
 from intern_platform.models.application import Application
 from intern_platform.models.community import Community
 from intern_platform.models.integration_setting import IntegrationSetting
@@ -21,6 +22,7 @@ from intern_platform.models.project import Project
 from intern_platform.models.review_record import ReviewRecord
 from intern_platform.models.role import Role, UserRole
 from intern_platform.models.user import User
+from intern_platform.repositories.audit_log import AuditLogRepository
 from intern_platform.services.notification_service import NotificationService
 
 router = APIRouter(tags=["committee-ops"])
@@ -546,6 +548,7 @@ def set_disabled(
     body: DisableBody,
     auth: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> dict:
     _committee(auth)
     _ensure_disabled()
@@ -554,9 +557,27 @@ def set_disabled(
         raise HTTPException(status_code=404, detail="用户不存在")
     if user.id == auth.id:
         raise HTTPException(status_code=400, detail="不能停用自己")
+    before_flag = db.execute(
+        text("SELECT disabled FROM users WHERE id = :id"),
+        {"id": user_id},
+    ).scalar()
     db.execute(
         text("UPDATE users SET disabled = :flag WHERE id = :id"),
         {"flag": 1 if body.disabled else 0, "id": user_id},
+    )
+    AuditLogRepository(db).create(
+        actor_id=auth.id,
+        actor_role="committee",
+        action="user.set_disabled",
+        resource_type="user",
+        resource_id=user_id,
+        before={"disabled": int(before_flag or 0)},
+        after={"disabled": 1 if body.disabled else 0, "email": user.email},
+        outcome="SUCCESS",
+        request_id=ledger.request_id,
+        trace_id=ledger.trace_id,
+        ip=ledger.ip,
+        user_agent=ledger.user_agent,
     )
     db.commit()
     return {"ok": True}
@@ -568,6 +589,7 @@ def set_community_disabled(
     body: DisableBody,
     auth: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> dict:
     _committee(auth)
     _ensure_disabled()
@@ -593,6 +615,23 @@ def set_community_disabled(
     db.execute(
         text("UPDATE users SET disabled = :flag WHERE id IN (%s)" % ",".join(str(item) for item in admin_ids)),
         {"flag": 1 if body.disabled else 0},
+    )
+    AuditLogRepository(db).create(
+        actor_id=auth.id,
+        actor_role="committee",
+        action="community.set_disabled",
+        resource_type="community",
+        resource_id=community_id,
+        after={
+            "disabled": 1 if body.disabled else 0,
+            "admin_user_ids": admin_ids,
+            "name": community.name,
+        },
+        outcome="SUCCESS",
+        request_id=ledger.request_id,
+        trace_id=ledger.trace_id,
+        ip=ledger.ip,
+        user_agent=ledger.user_agent,
     )
     db.commit()
     return {"ok": True}

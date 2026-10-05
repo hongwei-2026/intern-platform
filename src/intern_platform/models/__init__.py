@@ -7,6 +7,7 @@ from intern_platform.models.audit_log import AuditLog
 from intern_platform.models.community import Community
 from intern_platform.models.community_extension import CommunityExtension
 from intern_platform.models.cooperation_case import CooperationCase
+from intern_platform.models.email_code import EmailVerificationCode
 from intern_platform.models.final_submission import FinalSubmission
 from intern_platform.models.integration_setting import IntegrationSetting
 from intern_platform.models.liaison_message import LiaisonMessage
@@ -26,6 +27,7 @@ __all__ = [
     "Community",
     "CommunityExtension",
     "CooperationCase",
+    "EmailVerificationCode",
     "FinalSubmission",
     "IntegrationSetting",
     "LiaisonMessage",

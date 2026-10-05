@@ -25,6 +25,62 @@ class AuthorizationError(PermissionError):
     """资源范围或角色不匹配。"""
 
 
+# 通用 /transitions 入口：action → 允许角色（reject 按状态另判）
+_FIXED_ACTION_ROLES: dict[str, tuple[str, ...]] = {
+    "submit": ("student",),
+    "withdraw": ("student",),
+    "start_progress": ("student", "committee"),
+    "submit_final": ("student",),
+    "start_mentor_review": ("mentor",),
+    "approve_mentor": ("mentor",),
+    "start_mentor_final": ("mentor",),
+    "approve_mentor_final": ("mentor",),
+    "cancel_assignment": ("mentor",),
+    "approve_community": ("community_admin",),
+    "submit_community_final": ("community_admin",),
+    "approve_committee": ("committee",),
+    "approve_committee_final": ("committee",),
+}
+
+
+def resolve_transition_actor_role(
+    auth: AuthUser,
+    *,
+    action: str,
+    status_value: str,
+) -> str:
+    """按动作与当前状态解析服务端 actor_role；无权则抛 AuthorizationError。"""
+    action = (action or "").strip()
+    if action in _FIXED_ACTION_ROLES:
+        allowed = _FIXED_ACTION_ROLES[action]
+        for role in allowed:
+            if role == "student":
+                continue
+            if auth.has_role(role):
+                return role
+        if "student" in allowed and auth.has_role("student"):
+            return "student"
+        raise AuthorizationError(f"当前角色无权执行 {action}")
+
+    if action == "reject":
+        if status_value in ("submitted", "mentor_review") and auth.has_role("mentor"):
+            return "mentor"
+        if status_value == "community_review" and auth.has_role("community_admin"):
+            return "community_admin"
+        if status_value == "committee_review" and auth.has_role("committee"):
+            return "committee"
+        raise AuthorizationError("当前角色无权驳回")
+
+    if action == "reject_final":
+        if status_value == "mentor_final_review" and auth.has_role("mentor"):
+            return "mentor"
+        if status_value == "committee_final_review" and auth.has_role("committee"):
+            return "committee"
+        raise AuthorizationError("当前角色无权结项驳回")
+
+    raise AuthorizationError(f"未知或禁止的 action: {action}")
+
+
 @dataclass(frozen=True)
 class ReviewDecision:
     decision: str  # approve | reject

@@ -23,12 +23,24 @@ export function getStoredToken(scope?: 'public' | 'ops'): string | null {
   return readToken(useOps ? 'ops' : 'public')
 }
 
+/** 仅本站上传相对路径可预览/下载；拒绝外链与 javascript:，避免把 JWT 拼进任意 URL。 */
+export function isSafeUploadUrl(url?: string | null): boolean {
+  if (!url) return false
+  const value = url.trim()
+  if (!value.startsWith('/api/v1/uploads/files/')) return false
+  if (value.includes('://') || value.startsWith('//')) return false
+  const lower = value.toLowerCase()
+  if (lower.startsWith('javascript:') || lower.startsWith('data:')) return false
+  return true
+}
+
 export function withFileAuth(url?: string | null): string {
-  if (!url || !url.includes('/uploads/files/')) return url || ''
+  if (!isSafeUploadUrl(url)) return ''
+  const safe = url!.trim()
   const token = getStoredToken()
-  if (!token) return url
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}access_token=${encodeURIComponent(token)}`
+  if (!token) return safe
+  const sep = safe.includes('?') ? '&' : '?'
+  return `${safe}${sep}access_token=${encodeURIComponent(token)}`
 }
 
 export function setStoredToken(token: string | null, scope?: 'public' | 'ops') {

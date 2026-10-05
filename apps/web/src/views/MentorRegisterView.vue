@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
+import AuthShell from '@/components/AuthShell.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -29,16 +30,22 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="page narrow">
-    <div class="auth-panel mentor-reg">
-      <p class="kicker">导师通道</p>
-      <h1 class="page-title" style="font-size: 1.35rem">导师注册</h1>
-      <p class="page-desc">
-        请向社区管理员索取<strong>导师邀请码</strong>（私下发放，不会出现在学生可见页面）。填写后自动加入对应社区。
-      </p>
-      <form class="form" @submit.prevent="onSubmit">
-        <label>
-          导师邀请码 <span class="req">*</span>
+  <AuthShell
+    variant="mentor"
+    title="导师通道"
+    lead="用社区邀请码完成注册，自动加入对应社区并进入导师工作台。"
+    :points="['邀请码由社区管理员私下发放', '不会出现在学生可见页面']"
+  >
+    <template #head>
+      <h2>导师注册</h2>
+      <p>请向社区管理员索取邀请码后再填写资料。</p>
+    </template>
+
+    <form @submit.prevent="onSubmit">
+      <div class="field-block">
+        <span class="block-label">1 · 邀请码</span>
+        <label class="field">
+          <span>导师邀请码</span>
           <input
             v-model="inviteCode"
             required
@@ -48,42 +55,42 @@ async function onSubmit() {
             autocomplete="off"
           />
         </label>
-        <label>
-          邮箱 <span class="req">*</span>
-          <input v-model="email" type="email" required autocomplete="username" />
+      </div>
+
+      <div class="field-block">
+        <span class="block-label">2 · 账号资料</span>
+        <label class="field">
+          <span>邮箱</span>
+          <input v-model="email" type="email" required autocomplete="username" placeholder="name@hust.edu.cn" />
         </label>
-        <label>
-          显示名称 <span class="req">*</span>
+        <label class="field">
+          <span>显示名称</span>
           <input v-model="displayName" type="text" required placeholder="将展示给学生与组织" />
         </label>
-        <label>
-          密码（至少 6 位） <span class="req">*</span>
-          <input v-model="password" type="password" required minlength="6" autocomplete="new-password" />
+        <label class="field">
+          <span>密码</span>
+          <input
+            v-model="password"
+            type="password"
+            required
+            minlength="6"
+            autocomplete="new-password"
+            placeholder="至少 6 位"
+          />
         </label>
-        <p v-if="error" class="error">{{ error }}</p>
-        <button class="btn" type="submit" :disabled="auth.loading" style="width: 100%">
-          {{ auth.loading ? '提交中…' : '注册并进入导师工作台' }}
-        </button>
-      </form>
-      <p class="muted" style="margin-top: 1rem">
-        已有账号？
-        <RouterLink to="/login?role=mentor">导师登录</RouterLink>
-        ·
-        <RouterLink to="/register">学生注册</RouterLink>
-      </p>
-    </div>
-  </div>
-</template>
+      </div>
 
-<style scoped>
-.mentor-reg .kicker {
-  margin: 0 0 0.35rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: #1d4ed8;
-}
-.req {
-  color: #dc2626;
-}
-</style>
+      <p v-if="error" class="error">{{ error }}</p>
+      <button class="submit-btn" type="submit" :disabled="auth.loading">
+        {{ auth.loading ? '提交中…' : '注册并进入导师工作台' }}
+      </button>
+    </form>
+
+    <template #foot>
+      已有账号？
+      <RouterLink to="/login?role=mentor">导师登录</RouterLink>
+      <span class="sep">·</span>
+      <RouterLink to="/register">学生注册</RouterLink>
+    </template>
+  </AuthShell>
+</template>

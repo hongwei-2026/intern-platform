@@ -18,7 +18,13 @@ const parsed = computed(() => unpackLiaison(props.body))
     <p v-if="parsed.text">{{ parsed.text }}</p>
     <template v-for="(file, i) in parsed.files" :key="i">
       <img v-if="file.type === 'image' && file.url" :src="file.url" alt="" />
-      <a v-else-if="file.type === 'file' && file.url" :href="file.url" :download="file.name || '材料'" target="_blank" rel="noopener">下载 {{ file.name || '文件' }}</a>
+      <a
+        v-else-if="file.type === 'file' && file.url && file.url.startsWith('/api/v1/uploads/files/')"
+        :href="file.url"
+        :download="file.name || '材料'"
+        target="_blank"
+        rel="noopener"
+      >下载 {{ file.name || '文件' }}</a>
       <table v-else-if="file.type === 'table'">
         <tr v-for="(row, ri) in file.rows" :key="ri"><td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td></tr>
       </table>

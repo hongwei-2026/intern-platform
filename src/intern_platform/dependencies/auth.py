@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -21,6 +22,11 @@ from intern_platform.models.user import User
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _bearer = HTTPBearer(auto_error=False)
 ALGORITHM = "HS256"
+
+
+def password_token_stamp(password_hash: str) -> str:
+    """密码变更后使旧 JWT 失效（不新增表字段）。"""
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -55,10 +61,9 @@ class AuthUser:
     def has_community_role(self, role_code: str, community_id: int) -> bool:
         if self.has_role("committee"):
             return True
+        # 必须绑定具体 community_id；community_id 为空的旧数据不再视为全局管理员
         return any(
-            r.code == role_code
-            and (r.community_id is None or r.community_id == community_id)
-            for r in self.roles
+            r.code == role_code and r.community_id == community_id for r in self.roles
         )
 
     def primary_actor_role(self, *preferred: str) -> str:
@@ -85,6 +90,7 @@ def create_access_token(
     user_id: int,
     email: str,
     roles: list[dict[str, Any]],
+    password_hash: str,
     expires_minutes: int | None = None,
 ) -> str:
     settings = get_settings()
@@ -95,6 +101,7 @@ def create_access_token(
         "sub": str(user_id),
         "email": email,
         "roles": roles,
+        "pv": password_token_stamp(password_hash),
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
@@ -155,6 +162,13 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    token_pv = payload.get("pv")
+    if token_pv is None or token_pv != password_token_stamp(user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if user_is_disabled(db, user.id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

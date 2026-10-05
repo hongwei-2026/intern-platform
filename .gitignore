@@ -25,3 +25,7 @@ uploads/
 .DS_Store
 intern-platform-deploy*.zip
 scripts/_tmp_*
+certs/
+*.key
+*_bundle.crt
+*_bundle.pem

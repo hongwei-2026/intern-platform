@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from intern_platform.dependencies.auth import (
@@ -19,6 +20,8 @@ from intern_platform.dependencies.auth import (
     verify_password,
 )
 from intern_platform.dependencies.ledger import LedgerRequestContext
+from intern_platform.models.audit_log import AuditLog
+from intern_platform.models.mixins import utcnow
 from intern_platform.models.role import Role, UserRole
 from intern_platform.models.user import User
 from intern_platform.repositories.audit_log import AuditLogRepository
@@ -32,6 +35,9 @@ from intern_platform.schemas.auth import (
     UserOut,
     UserUpdateRequest,
 )
+
+_GRANTABLE_ROLES = frozenset({"student", "mentor", "community_admin", "committee"})
+_SCOPED_ROLES = frozenset({"mentor", "community_admin"})
 
 
 def user_to_out(user: User, roles: list | None = None) -> UserOut:
@@ -77,11 +83,27 @@ _LOGIN_WINDOW_SECONDS = 600
 _LOGIN_MAX_FAILS = 8
 
 
-def _login_locked(email: str) -> bool:
+def _login_locked_memory(email: str) -> bool:
     now = time.monotonic()
     recent = [stamp for stamp in _login_fails.get(email, []) if now - stamp < _LOGIN_WINDOW_SECONDS]
     _login_fails[email] = recent
     return len(recent) >= _LOGIN_MAX_FAILS
+
+
+def _login_locked_db(session: Session, email: str) -> bool:
+    """跨进程：用审计流水里近期失败次数判断锁定。"""
+    since = utcnow() - timedelta(seconds=_LOGIN_WINDOW_SECONDS)
+    count = session.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(
+            AuditLog.action == "auth.login",
+            AuditLog.outcome == "FAIL",
+            AuditLog.created_at >= since,
+            AuditLog.resource_id == email,
+        )
+    )
+    return int(count or 0) >= _LOGIN_MAX_FAILS
 
 
 class AuthService:
@@ -90,11 +112,12 @@ class AuthService:
         self.audits = AuditLogRepository(session)
 
     def register(self, body: RegisterRequest, ledger: LedgerRequestContext) -> TokenResponse:
-        existing = self.session.scalar(select(User).where(User.email == body.email))
+        email_n = body.email.strip().lower()
+        existing = self.session.scalar(select(User).where(User.email == email_n))
         if existing:
             raise ValueError("邮箱已注册")
         user = User(
-            email=body.email.strip().lower(),
+            email=email_n,
             password_hash=hash_password(body.password),
             display_name=body.display_name,
             school=body.school,
@@ -109,6 +132,7 @@ class AuthService:
             user_id=user.id,
             email=user.email,
             roles=roles_payload(bindings),
+            password_hash=user.password_hash,
         )
         self.audits.create(
             actor_id=user.id,
@@ -180,6 +204,7 @@ class AuthService:
             user_id=user.id,
             email=user.email,
             roles=roles_payload(bindings),
+            password_hash=user.password_hash,
         )
         self.audits.create(
             actor_id=user.id,
@@ -199,7 +224,7 @@ class AuthService:
 
     def login(self, body: LoginRequest, ledger: LedgerRequestContext) -> TokenResponse:
         email = body.email.strip().lower()
-        if _login_locked(email):
+        if _login_locked_memory(email) or _login_locked_db(self.session, email):
             raise PermissionError("尝试次数过多，请十分钟后再试")
         user = self.session.scalar(select(User).where(User.email == email))
         ok = user is not None and verify_password(body.password, user.password_hash)
@@ -211,7 +236,8 @@ class AuthService:
                 actor_role="anonymous",
                 action="auth.login",
                 resource_type="user",
-                resource_id=user.id if user else email,
+                resource_id=email,
+                after={"email": email, "user_id": user.id if user else None},
                 outcome="FAIL",
                 request_id=ledger.request_id,
                 trace_id=ledger.trace_id,
@@ -227,6 +253,7 @@ class AuthService:
             user_id=user.id,
             email=user.email,
             roles=roles_payload(bindings),
+            password_hash=user.password_hash,
         )
         self.audits.create(
             actor_id=user.id,
@@ -254,14 +281,44 @@ class AuthService:
         bindings = load_user_roles(self.session, user.id)
         return user_to_out(user, bindings)
 
-    def change_password(self, auth: AuthUser, body: ChangePasswordRequest) -> None:
+    def change_password(
+        self,
+        auth: AuthUser,
+        body: ChangePasswordRequest,
+        ledger: LedgerRequestContext,
+    ) -> None:
         if auth.has_role("community_admin"):
             raise PermissionError("组织账号由组委会发放，不能修改密码")
         user = auth.user
         if not verify_password(body.old_password, user.password_hash):
+            self.audits.create(
+                actor_id=auth.id,
+                actor_role=auth.primary_actor_role("student", "mentor", "committee"),
+                action="auth.password_change",
+                resource_type="user",
+                resource_id=user.id,
+                outcome="FAIL",
+                request_id=ledger.request_id,
+                trace_id=ledger.trace_id,
+                ip=ledger.ip,
+                user_agent=ledger.user_agent,
+            )
+            self.session.commit()
             raise PermissionError("原密码不正确")
         user.password_hash = hash_password(body.new_password)
         self.session.add(user)
+        self.audits.create(
+            actor_id=auth.id,
+            actor_role=auth.primary_actor_role("student", "mentor", "committee"),
+            action="auth.password_change",
+            resource_type="user",
+            resource_id=user.id,
+            outcome="SUCCESS",
+            request_id=ledger.request_id,
+            trace_id=ledger.trace_id,
+            ip=ledger.ip,
+            user_agent=ledger.user_agent,
+        )
         self.session.commit()
 
     def grant_role(
@@ -272,6 +329,15 @@ class AuthService:
     ) -> UserOut:
         if not auth.has_role("committee"):
             raise PermissionError("仅组委会可赋权")
+        if body.role_code not in _GRANTABLE_ROLES:
+            raise ValueError(f"不允许授予角色: {body.role_code}")
+        if body.role_code in _SCOPED_ROLES and body.community_id is None:
+            raise ValueError("导师/组织角色必须绑定具体社区，禁止空社区全局赋权")
+        if body.role_code in {"student", "committee"} and body.community_id is not None:
+            raise ValueError("学生/组委会角色不绑定社区")
+        from intern_platform.services.community_service import CommunityService
+
+        CommunityService(self.session)._assert_role_compatible(body.user_id, body.role_code)
         role = self.session.scalar(select(Role).where(Role.code == body.role_code))
         if role is None:
             raise LookupError(f"角色不存在: {body.role_code}")

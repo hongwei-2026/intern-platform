@@ -476,7 +476,7 @@ onUnmounted(() => {
                 <span class="guide-tag violet">组委会</span>
               </div>
               <p>
-                使用右上角「组织登录」进入组织侧。同一账号体系，按角色进入对应工作台：导师管项目与一审，
+                使用右上角「登录」选择「组织」进入组织侧。同一账号体系，按角色进入对应工作台：导师管项目与一审，
                 社区管理员管报名 / 字段 / 二审，组委会管准入、终审与公示。
               </p>
               <div class="guide-callout">
@@ -568,7 +568,7 @@ onUnmounted(() => {
                 <span class="guide-tag teal">资料完善</span>
               </div>
               <p>
-                使用右上角「学生登录」或先完成注册。建议尽早完善 GitHub / Gitea ID、常用邮箱，
+                使用右上角「登录」选择「学生」，或先完成注册。建议尽早完善 GitHub / Gitea ID、常用邮箱，
                 便于审核与结项时身份核验。
               </p>
               <ul class="guide-checklist">
@@ -660,7 +660,7 @@ onUnmounted(() => {
                 <span class="guide-tag orange">导师台</span>
               </div>
               <p>
-                右上角「组织登录」后进入「导师台」，可管理本人项目、待审申请与结项初审队列。
+                右上角「登录」选择「导师」后进入「导师台」，可管理本人项目、待审申请与结项初审队列。
                 请确认账号已绑定到对应社区，否则无法发布归属该社区的项目。
               </p>
             </section>

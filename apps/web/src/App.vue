@@ -11,6 +11,16 @@ const router = useRouter()
 const isHome = computed(() => route.path === '/')
 const isOpsLogin = computed(() => route.path.startsWith('/ops/login'))
 const isCommitteeArea = computed(() => route.path.startsWith('/committee'))
+const isAuthPage = computed(() => {
+  const p = route.path
+  return (
+    p === '/login' ||
+    p.startsWith('/login/') ||
+    p === '/register' ||
+    p.startsWith('/register/') ||
+    p.startsWith('/ops/login')
+  )
+})
 const menuOpen = ref(false)
 const menuRoot = ref<HTMLElement | null>(null)
 
@@ -45,20 +55,20 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
 </script>
 
 <template>
-  <div class="site">
-    <header class="topnav">
-      <div class="topnav-inner">
-        <RouterLink class="brand" :to="isOpsLogin ? '/ops/login' : '/'">
-          <span class="brand-mark" aria-hidden="true">
-            <img src="/logos/penguin-blue.svg" alt="" />
-          </span>
-          <span class="brand-text">
-            <strong>华科开源原子</strong>
-            <span>{{ isCommitteeArea || isOpsLogin ? '组委会通道' : '开源实习管理系统' }}</span>
-          </span>
-        </RouterLink>
+  <div class="site" :class="{ 'is-auth-page': isAuthPage }">
+    <header v-if="!isAuthPage" class="topnav">
+    <div class="topnav-inner">
+      <RouterLink class="brand" to="/">
+        <span class="brand-mark" aria-hidden="true">
+          <img src="/logos/penguin-blue.svg" alt="" />
+        </span>
+        <span class="brand-text">
+          <strong>华科开源原子</strong>
+          <span>{{ isCommitteeArea ? '组委会通道' : '开源实习管理系统' }}</span>
+        </span>
+      </RouterLink>
 
-        <nav v-if="!isOpsLogin" class="topnav-links" aria-label="主导航">
+      <nav class="topnav-links" aria-label="主导航">
           <RouterLink v-if="auth.hasRole('committee')" class="nav-workbench" to="/committee">组委会工作台</RouterLink>
           <RouterLink
             v-if="auth.isLoggedIn && auth.isMentor"
@@ -78,7 +88,7 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
         </nav>
 
         <div class="nav-actions">
-          <template v-if="auth.isLoggedIn && !isOpsLogin">
+          <template v-if="auth.isLoggedIn">
             <NotificationBell />
             <div ref="menuRoot" class="user-menu">
               <button
@@ -136,20 +146,19 @@ const avatarText = computed(() => (auth.displayName || '?').slice(0, 1))
               </div>
             </div>
           </template>
-          <template v-else-if="!isOpsLogin && !isCommitteeArea">
-            <RouterLink class="btn student sm" to="/login?role=student">学生登录</RouterLink>
-            <RouterLink class="btn secondary sm" to="/login?role=mentor">导师登录</RouterLink>
-            <RouterLink class="btn secondary sm" to="/login?role=org">组织登录</RouterLink>
+          <template v-else-if="!isCommitteeArea">
+            <RouterLink class="btn secondary sm" to="/register">注册</RouterLink>
+            <RouterLink class="btn student sm" to="/login">登录</RouterLink>
           </template>
         </div>
       </div>
     </header>
 
-    <main class="site-main" :class="{ 'is-home': isHome }">
+    <main class="site-main" :class="{ 'is-home': isHome, 'is-auth-main': isAuthPage }">
       <RouterView />
     </main>
 
-    <footer v-if="!isOpsLogin" class="site-footer">
+    <footer v-if="!isOpsLogin && !isAuthPage" class="site-footer">
       <div class="footer-inner">
         <div>
           <strong>华科开放原子开源俱乐部 · 开源实习</strong>

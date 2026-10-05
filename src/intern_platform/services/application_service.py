@@ -17,6 +17,7 @@ from intern_platform.services.application_workflow import (
 )
 from intern_platform.services.project_presenters import seat_taken_count
 from intern_platform.services.schema_validate import dumps_extra, validate_extra_fields
+from intern_platform.services.upload_urls import sanitize_upload_fields
 
 
 class ApplicationService:
@@ -114,9 +115,14 @@ class ApplicationService:
             )
 
         ext = self._extension_for_project(project)
+        safe_attachment, safe_extra = sanitize_upload_fields(
+            attachment_url=body.attachment_url,
+            extra_fields=body.extra_fields,
+            owner_user_id=auth.id,
+        )
         if body.submit:
             validate_extra_fields(
-                ext.application_schema if ext else None, body.extra_fields
+                ext.application_schema if ext else None, safe_extra
             )
 
         try:
@@ -126,8 +132,8 @@ class ApplicationService:
                     existing.status = "draft"
                     existing.current_node = "none"
                 existing.statement = body.statement
-                existing.attachment_url = body.attachment_url
-                existing.extra_fields = dumps_extra(body.extra_fields)
+                existing.attachment_url = safe_attachment
+                existing.extra_fields = dumps_extra(safe_extra)
                 existing.version = int(existing.version or 0) + 1
                 self.session.add(existing)
                 self.session.flush()
@@ -137,8 +143,8 @@ class ApplicationService:
                     project_id=project_id,
                     student_id=auth.id,
                     statement=body.statement,
-                    attachment_url=body.attachment_url,
-                    extra_fields=dumps_extra(body.extra_fields),
+                    attachment_url=safe_attachment,
+                    extra_fields=dumps_extra(safe_extra),
                     status="draft",
                     current_node="none",
                     version=0,
@@ -221,16 +227,12 @@ class ApplicationService:
             )
         elif auth.has_role("community_admin"):
             community_ids = auth.community_ids_for("community_admin")
-            has_global = any(
-                r.code == "community_admin" and r.community_id is None for r in auth.roles
-            )
-            stmt = stmt.where(
-                Application.status.in_(("community_review", "community_final_review"))
-            )
-            if community_ids and not has_global:
-                stmt = stmt.where(Project.community_id.in_(community_ids))
-            elif not community_ids and not has_global:
+            if not community_ids:
                 return []
+            stmt = stmt.where(
+                Application.status.in_(("community_review", "community_final_review")),
+                Project.community_id.in_(community_ids),
+            )
         elif auth.has_role("mentor"):
             stmt = stmt.where(
                 Project.mentor_id == auth.id,
@@ -318,11 +320,19 @@ class ApplicationService:
         assert project is not None
         ext = self._extension_for_project(project)
         data = body.model_dump(exclude_unset=True)
-        if "extra_fields" in data:
-            validate_extra_fields(
-                ext.application_schema if ext else None, data["extra_fields"]
+        if "attachment_url" in data or "extra_fields" in data:
+            safe_attachment, safe_extra = sanitize_upload_fields(
+                attachment_url=data.get("attachment_url", app.attachment_url),
+                extra_fields=data.get("extra_fields"),
+                owner_user_id=auth.id,
             )
-            data["extra_fields"] = dumps_extra(data["extra_fields"])
+            if "attachment_url" in data:
+                data["attachment_url"] = safe_attachment
+            if "extra_fields" in data:
+                validate_extra_fields(
+                    ext.application_schema if ext else None, safe_extra
+                )
+                data["extra_fields"] = dumps_extra(safe_extra)
         for key, value in data.items():
             setattr(app, key, value)
         self.session.commit()

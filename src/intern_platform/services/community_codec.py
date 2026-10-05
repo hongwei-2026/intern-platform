@@ -144,4 +144,5 @@ def community_to_out(community: Community, *, include_invite: bool = True) -> Co
         invite_code=community.invite_code if include_invite else None,
         tags=parse_tags(getattr(community, "tags", None)),
         intro_body=parse_intro_body(getattr(community, "intro_body", None)),
+        admin_initial_password=getattr(community, "_admin_initial_password", None),
     )

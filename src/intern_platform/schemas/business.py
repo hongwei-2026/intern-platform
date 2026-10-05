@@ -55,11 +55,13 @@ class CommunityOut(BaseModel):
     invite_code: str | None = None
     tags: list[str] = Field(default_factory=list)
     intro_body: dict[str, Any] | None = None
+    # 仅开通组织当次返回一次，不会再查到
+    admin_initial_password: str | None = None
 
 
 class CommunityJoinRequest(BaseModel):
     invite_code: str = Field(min_length=4, max_length=32)
-    as_role: str = Field(default="mentor", pattern="^(mentor|community_admin)$")
+    as_role: str = Field(default="mentor", pattern="^mentor$")
 
 
 class CommunityJoinOut(BaseModel):

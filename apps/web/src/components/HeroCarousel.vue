@@ -23,7 +23,7 @@ const defaultSlides = [
     titleHtml: '打通实习全链路<br />从申请到结项',
     lead:
       '完整流程可演示：组织报名与审核 → 发布项目 → 学生申请及审核 → 中选 → 项目开发 → 结项审核（导师 + 组委会）→ 结项公示。',
-    meta: '学生入口 · 组织入口 · 公示透明',
+    meta: '统一登录入口 · 分角色进入 · 公示透明',
     image:
       'https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=1800&q=80',
     primary: { to: '/guide#sec-flow', label: '阅读完整指南' },

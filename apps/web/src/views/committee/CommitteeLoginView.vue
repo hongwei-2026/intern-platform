@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AuthShell from '@/components/AuthShell.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -30,25 +31,35 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="page narrow">
-    <div class="auth-panel">
-      <h1 class="page-title" style="font-size: 1.35rem">组委会登录</h1>
-      <p class="page-desc">此地址不对公开站点展示，登录后进入组委会工作台。</p>
+  <AuthShell
+    variant="committee"
+    kicker="组委会通道"
+    title="平台运维入口"
+    :show-home="false"
+    lead="此地址不对公开站点展示，登录后进入组委会工作台。"
+    :points="['仅组委会账号可进入', '用于社区准入、结项名单与平台设置']"
+  >
+    <template #head>
+      <h2>组委会登录</h2>
+      <p>请使用组委会账号登录。</p>
+    </template>
 
-      <form class="form" @submit.prevent="onSubmit">
-        <label>
-          邮箱
+    <form @submit.prevent="onSubmit">
+      <div class="field-block">
+        <span class="block-label">账号登录</span>
+        <label class="field">
+          <span>邮箱</span>
           <input v-model="email" type="email" required autocomplete="username" placeholder="committee@…" />
         </label>
-        <label>
-          密码
-          <input v-model="password" type="password" required autocomplete="current-password" />
+        <label class="field">
+          <span>密码</span>
+          <input v-model="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
         </label>
-        <p v-if="error" class="error">{{ error }}</p>
-        <button class="btn" type="submit" :disabled="auth.loading" style="width: 100%; border-radius: 999px">
-          {{ auth.loading ? '登录中…' : '登录' }}
-        </button>
-      </form>
-    </div>
-  </div>
+      </div>
+      <p v-if="error" class="error">{{ error }}</p>
+      <button class="submit-btn" type="submit" :disabled="auth.loading">
+        {{ auth.loading ? '登录中…' : '登录' }}
+      </button>
+    </form>
+  </AuthShell>
 </template>

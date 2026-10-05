@@ -156,7 +156,7 @@ function scrollTrack(dir: 1 | -1) {
       <div class="section-head">
         <h2>开始参与</h2>
         <div class="accent-line" />
-        <p>先阅读参与指南，再浏览项目；登录请使用右上角学生 / 组织入口</p>
+        <p>先阅读参与指南，再浏览项目；登录请点右上角「登录」并选择账户类型</p>
       </div>
       <div class="btn-row" style="justify-content: center">
         <RouterLink class="btn student" to="/projects">浏览项目</RouterLink>

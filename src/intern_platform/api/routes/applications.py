@@ -166,9 +166,12 @@ def reward_decision(
     body: RewardDecision,
     auth: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> dict:
     try:
-        MessageService(db).decide_reward(auth, application_id, body.decision, body.note)
+        MessageService(db).decide_reward(
+            auth, application_id, body.decision, body.note, ledger=ledger
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -295,8 +298,16 @@ def submit_community_final(
     if app.status != "community_final_review":
         raise HTTPException(status_code=409, detail="当前不在社区报送环节")
     lines = [body.note.strip()]
-    if body.attachment_url:
-        lines.append(f"交付件：{body.attachment_name or '材料'} {body.attachment_url}")
+    from intern_platform.services.upload_urls import require_safe_upload_url
+
+    try:
+        safe_attach = require_safe_upload_url(
+            body.attachment_url, field="结项附件", owner_user_id=auth.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if safe_attach:
+        lines.append(f"交付件：{body.attachment_name or '材料'} {safe_attach}")
     if body.report_url:
         lines.append(f"设计文档：{body.report_url}")
     if body.code_url:
@@ -528,17 +539,30 @@ def transition_application(
     ledger: LedgerRequestContext = Depends(get_ledger_context),
 ) -> TransitionResponse:
     """唯一通用改状态入口（仍禁止路由直接赋值 status）。"""
-    key = require_idempotency_key(body.idempotency_key or ledger.idempotency_key)
-    # 角色以服务端鉴权为准，不信任客户端 actor_role
-    actor_role = auth.primary_actor_role(
-        "student", "mentor", "community_admin", "committee"
+    from intern_platform.services.review_usecase import (
+        AuthorizationError,
+        ReviewUseCase,
+        resolve_transition_actor_role,
     )
+
+    key = require_idempotency_key(body.idempotency_key or ledger.idempotency_key)
     svc_app = ApplicationService(db)
     app = svc_app.get(application_id)
     if app is None:
         raise HTTPException(status_code=404, detail="申请不存在")
     if not svc_app.can_view(auth, app):
         raise HTTPException(status_code=403, detail="无权操作申请")
+
+    try:
+        actor_role = resolve_transition_actor_role(
+            auth, action=body.action, status_value=app.status
+        )
+        if actor_role == "student" and app.student_id != auth.id:
+            raise AuthorizationError("仅申请人本人可执行该操作")
+        if actor_role != "student":
+            ReviewUseCase(db).assert_resource_scope(auth, app, actor_role)
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     ctx = TransitionContext(
         actor_id=auth.id,
