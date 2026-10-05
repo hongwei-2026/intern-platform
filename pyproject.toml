@@ -40,3 +40,6 @@ intern_platform = ["py.typed"]
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]
 testpaths = ["tests"]
+markers = [
+  "security: security hardening and abuse-case checks",
+]

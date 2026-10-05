@@ -12,11 +12,15 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
   api:
-    name: API (pytest + regression)
+    name: API (pytest + migrate + compile)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -50,27 +54,49 @@ jobs:
               print("ok", p, p.stat().st_size)
           PY
 
-      - name: Pytest (incl. regression guards)
-        env:
-          PYTHONUTF8: "1"
-        run: pytest -q --tb=short
+      - name: Byte-compile src + scripts
+        run: python -m compileall -q src scripts apps/api
+
+      - name: Pytest (full suite)
+        run: pytest -q --tb=short --junitxml=junit-api-${{ matrix.python-version }}.xml
+
+      - name: Pytest security subset (explicit)
+        run: |
+          pytest -q --tb=short \
+            tests/test_security_fixes.py \
+            tests/test_security_hardening.py \
+            tests/test_profile_oauth_hardening.py
 
       - name: Alembic upgrade (fresh sqlite)
         env:
           DB_DRIVER: sqlite
           DATABASE_URL: sqlite:////tmp/intern-ci.db
+          SECRET_KEY: ci-secret-key-not-for-prod
         run: |
           mkdir -p /tmp
           alembic upgrade head
           python - <<'PY'
-          from sqlalchemy import create_engine, inspect
+          from sqlalchemy import create_engine, inspect, text
           eng = create_engine("sqlite:////tmp/intern-ci.db")
           cols = {c["name"] for c in inspect(eng).get_columns("communities")}
           assert "invite_code" in cols, cols
           for need in ("homepage_url", "gitea_org_url", "logo_url", "description", "tags", "intro_body"):
               assert need in cols, (need, cols)
-          print("communities columns ok")
+          user_cols = {c["name"] for c in inspect(eng).get_columns("users")}
+          for need in ("disabled", "github_id", "gitee_id", "oauth_avatars"):
+              assert need in user_cols, (need, user_cols)
+          with eng.connect() as conn:
+              ver = conn.execute(text("select version_num from alembic_version")).scalar()
+          print("communities columns ok; users columns ok; alembic=", ver)
           PY
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-api-${{ matrix.python-version }}
+          path: junit-api-${{ matrix.python-version }}.xml
+          if-no-files-found: ignore
 
   web:
     name: Web (guards + typecheck + build)
@@ -111,3 +137,175 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Built assets must include brand + confirm dialog
+        working-directory: .
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          dist = Path("apps/web/dist")
+          assert (dist / "index.html").is_file()
+          html = (dist / "index.html").read_text(encoding="utf-8", errors="replace")
+          assert "assets/" in html
+          js_blobs = []
+          for p in (dist / "assets").glob("*.js"):
+              js_blobs.append(p.read_text(encoding="utf-8", errors="replace"))
+          joined = "\n".join(js_blobs)
+          assert "ConfirmDialog" in joined or "expectText" in joined, "confirm dialog missing from build"
+          print("web dist markers ok, js files=", len(js_blobs))
+          PY
+
+  security-live:
+    name: Security live (seed + verify_security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [api]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate PDF sample
+        run: python scripts/generate_design_pdf.py
+
+      - name: Migrate + seed demo DB
+        env:
+          DB_DRIVER: sqlite
+          DATABASE_URL: sqlite:////tmp/intern-live.db
+          SECRET_KEY: ci-live-secret-key
+          APP_ENV: development
+          OAUTH_DEV_MOCK: "true"
+        run: |
+          mkdir -p /tmp data
+          alembic upgrade head
+          python scripts/seed.py
+
+      - name: Start API on :8001
+        env:
+          DB_DRIVER: sqlite
+          DATABASE_URL: sqlite:////tmp/intern-live.db
+          SECRET_KEY: ci-live-secret-key
+          APP_ENV: development
+          OAUTH_DEV_MOCK: "true"
+          PUBLIC_API_BASE: http://127.0.0.1:8001
+          FRONTEND_BASE: http://127.0.0.1:5173
+        run: |
+          nohup python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8001 > /tmp/api-live.log 2>&1 &
+          echo $! > /tmp/api-live.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8001/api/v1/health >/dev/null; then
+              echo "api ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "api failed to start"
+          tail -n 80 /tmp/api-live.log || true
+          exit 1
+
+      - name: verify_security against live API
+        run: python scripts/verify_security.py --base http://127.0.0.1:8001/api/v1
+
+      - name: Cloud smoke subset against live API
+        env:
+          SMOKE_WEB: http://127.0.0.1:8001
+          SMOKE_API: http://127.0.0.1:8001/api/v1
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, uuid
+          API = os.environ["SMOKE_API"]
+          def call(method, path, token=None, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              h = {"Content-Type": "application/json", "X-Idempotency-Key": str(uuid.uuid4())}
+              if token:
+                  h["Authorization"] = f"Bearer {token}"
+              req = urllib.request.Request(API + path, data=data, method=method, headers=h)
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return r.status, json.loads(r.read().decode())
+          # health
+          s, d = call("GET", "/health")
+          assert s == 200 and d.get("ok") is True, d
+          # demo logins
+          for email in (
+              "student@demo.hust.edu.cn",
+              "mentor@demo.hust.edu.cn",
+              "admin@demo.hust.edu.cn",
+              "committee@demo.hust.edu.cn",
+          ):
+              s, d = call("POST", "/auth/login", body={"email": email, "password": "Demo@123456"})
+              assert s == 200 and d.get("access_token"), (email, s, d)
+          # forge profile ids
+          s, d = call("POST", "/auth/login", body={"email": "student@demo.hust.edu.cn", "password": "Demo@123456"})
+          tok = d["access_token"]
+          s, me = call("PATCH", "/auth/me", token=tok, body={"github_id": "ci-forged", "member_no": "CI-NO"})
+          assert s == 200 and me.get("github_id") != "ci-forged" and me.get("member_no") != "CI-NO", me
+          print("live smoke ok")
+          PY
+
+      - name: Dump API log on failure
+        if: failure()
+        run: tail -n 120 /tmp/api-live.log || true
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f Dockerfile.api -t intern-platform-api:ci .
+
+      - name: Build Web image
+        run: docker build -f Dockerfile.web -t intern-platform-web:ci .
+
+      - name: API image smoke (ephemeral)
+        run: |
+          docker run -d --name intern-ci-api \
+            -e DB_DRIVER=sqlite \
+            -e DATABASE_URL=sqlite:////app/data/ci.db \
+            -e SECRET_KEY=ci-docker-secret \
+            -e SEED_ON_START=true \
+            -e APP_ENV=development \
+            -e OAUTH_DEV_MOCK=true \
+            -p 18000:8000 \
+            intern-platform-api:ci
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:18000/api/v1/health >/dev/null; then
+              echo "docker api healthy"
+              curl -fsS http://127.0.0.1:18000/api/v1/health
+              echo
+              docker rm -f intern-ci-api
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs intern-ci-api || true
+          docker rm -f intern-ci-api || true
+          exit 1
+
+  ci-ok:
+    name: CI gate
+    runs-on: ubuntu-latest
+    needs: [api, web, security-live, docker]
+    if: always()
+    steps:
+      - name: Require all jobs green
+        run: |
+          echo "api=${{ needs.api.result }}"
+          echo "web=${{ needs.web.result }}"
+          echo "security-live=${{ needs.security-live.result }}"
+          echo "docker=${{ needs.docker.result }}"
+          test "${{ needs.api.result }}" = "success"
+          test "${{ needs.web.result }}" = "success"
+          test "${{ needs.security-live.result }}" = "success"
+          test "${{ needs.docker.result }}" = "success"
