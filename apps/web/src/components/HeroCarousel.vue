@@ -104,7 +104,7 @@ function fromRemote(item: RemoteSlide) {
     },
     secondary: secondaryTo
       ? { to: secondaryTo, label: item.secondaryLabel || '了解更多', external: secondaryTo.startsWith('http') }
-      : null,
+      : { to: '/guide', label: '了解更多', external: false },
   }
 }
 

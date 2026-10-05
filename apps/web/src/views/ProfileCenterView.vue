@@ -37,6 +37,7 @@ watch(
 const saving = ref(false)
 const msg = ref('')
 const err = ref('')
+const toast = ref<InstanceType<typeof ToastFeedback> | null>(null)
 
 const form = ref({
   display_name: '',

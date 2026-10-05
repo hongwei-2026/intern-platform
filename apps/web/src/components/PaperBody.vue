@@ -9,7 +9,7 @@ export type PaperBlock = {
   rows?: string[][]
 }
 
-const props = defineProps<{ host: { body?: string; blocks?: PaperBlock[] } }>()
+const props = defineProps<{ host: { body?: string | null; blocks?: PaperBlock[] } }>()
 
 const root = ref<HTMLElement | null>(null)
 const picked = ref('')

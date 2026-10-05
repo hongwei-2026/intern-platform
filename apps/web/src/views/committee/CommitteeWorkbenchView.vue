@@ -30,7 +30,14 @@ type Term = {
   status: string
   decision_note?: string | null
 }
-type QueueItem = { application_id: number; title: string; body: string; student: string; project: string; blocks?: Block[] }
+type QueueItem = {
+  application_id: number
+  title: string
+  body?: string | null
+  student?: string
+  project?: string
+  blocks?: Block[]
+}
 type Slide = {
   id: string
   title: string
@@ -694,7 +701,7 @@ function syncNews(item: NewsItem) {
 
 const uploading = ref(false)
 
-function ensureBlocks(item: { body: string; blocks?: Block[] }) {
+function ensureBlocks(item: { body?: string | null; blocks?: Block[] }) {
   if (!item.blocks?.length) item.blocks = [{ id: `b-${Date.now()}`, type: 'text', text: item.body || '' }]
   return item.blocks
 }
@@ -711,7 +718,7 @@ function appendToGuide(kind: 'table' | 'image' | 'video', event?: Event) {
   else if (event) void addMedia(chapter, kind, event)
 }
 
-function addTable(item: { blocks?: Block[] }) {
+function addTable(item: { blocks?: Block[]; body?: string | null; [key: string]: unknown }) {
   item.blocks = item.blocks || []
   item.blocks.push({
     id: `b-${Date.now()}`,
@@ -723,7 +730,11 @@ function addTable(item: { blocks?: Block[] }) {
   })
 }
 
-async function addMedia(item: { blocks?: Block[] }, kind: 'image' | 'video', event: Event) {
+async function addMedia(
+  item: { blocks?: Block[]; body?: string | null; [key: string]: unknown },
+  kind: 'image' | 'video',
+  event: Event,
+) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
@@ -1522,13 +1533,13 @@ onMounted(load)
             <PaperBody :host="openedPub" />
             </div>
             <div class="paper-tools">
-              <button type="button" @click="addTable(openedPub)">插入表格</button>
-              <label>插入图片<input class="file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="addMedia(openedPub, 'image', $event)" /></label>
-              <label>插入视频<input class="file" type="file" accept="video/mp4,video/webm" @change="addMedia(openedPub, 'video', $event)" /></label>
+              <button type="button" @click="addTable(openedPub as QueueItem)">插入表格</button>
+              <label>插入图片<input class="file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="addMedia(openedPub as QueueItem, 'image', $event)" /></label>
+              <label>插入视频<input class="file" type="file" accept="video/mp4,video/webm" @change="addMedia(openedPub as QueueItem, 'video', $event)" /></label>
               <button type="button" @click="openPostPreview('pub')">预览</button>
             </div>
             <div class="acts">
-              <button class="btn" type="button" :disabled="busy" @click="publishQueued(openedPub)">发布到结项公示</button>
+              <button class="btn" type="button" :disabled="busy" @click="publishQueued(openedPub as QueueItem)">发布到结项公示</button>
             </div>
           </div>
           <article v-else-if="siteKind === 'pub' && openedPub && 'published_at' in openedPub" class="news-preview">
