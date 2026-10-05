@@ -351,9 +351,9 @@ def main() -> int:
     code, _ = call("POST", f"/applications/{app_id}/reviews", student, {"decision": "approve", "comment": "nope"})
     ok("student cannot review", code == 403, code)
 
-    # illegal transition
+    # illegal transition / 越权：403 或 409 均可
     code, _ = call("POST", f"/applications/{app_id}/transitions", student, {"action": "approve_committee"})
-    ok("illegal transition 409", code == 409, code)
+    ok("illegal transition blocked", code in (403, 409), code)
 
     # mentor approve
     code, r = call("POST", f"/applications/{app_id}/reviews", mentor_tok, {"decision": "approve", "comment": "mentor ok"})
@@ -412,12 +412,20 @@ def main() -> int:
     finq = [a for a in oinbox2 if isinstance(oinbox2, list) and a.get("id") == app_id]
     ok("org final queue", bool(finq) and finq[0].get("status") == "community_final_review", finq[0].get("status") if finq else None)
 
-    # community-final auto completed
+    # community-final：附件须为组织本人上传
+    code_oz, up_org_z = _upload_raw(
+        org_tok, "zip", "org-final.zip", zbytes, "application/zip", f"b{uuid.uuid4().hex}"
+    )
+    ok("org upload final zip", code_oz == 200 and "url" in (up_org_z or {}), up_org_z if code_oz != 200 else up_org_z.get("url"))
     code, r = call(
         "POST",
         f"/applications/{app_id}/community-final",
         org_tok,
-        {"note": "社区已核对，报送组委会", "attachment_url": upz.get("url"), "attachment_name": "deliverable.zip"},
+        {
+            "note": "社区已核对，报送组委会",
+            "attachment_url": (up_org_z or {}).get("url"),
+            "attachment_name": "org-final.zip",
+        },
     )
     ok("community-final -> completed", code == 200 and r.get("to_status") == "completed", r)
 

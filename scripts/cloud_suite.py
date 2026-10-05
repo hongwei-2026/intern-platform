@@ -19,15 +19,25 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HERE = Path(__file__).resolve().parent
 CLOUD_WEB = "https://intern.openatom.club"
 
 SUITES = (
-    ("security", "scripts/verify_security.py", True),
-    ("smoke", "scripts/cloud_smoke.py", False),
-    ("browser", "scripts/cloud_browser.py", False),
-    ("e2e", "scripts/cloud_e2e.py", False),
-    ("extra", "scripts/cloud_extra_flows.py", False),
+    ("security", "verify_security.py", True),
+    ("smoke", "cloud_smoke.py", False),
+    ("browser", "cloud_browser.py", False),
+    ("e2e", "cloud_e2e.py", False),
+    ("extra", "cloud_extra_flows.py", False),
 )
+
+
+def _script_path(name: str) -> Path:
+    """支持仓库内 scripts/ 与 /tmp 扁平目录两种布局。"""
+    candidates = (HERE / name, ROOT / "scripts" / name, Path.cwd() / name)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return HERE / name
 
 
 def main() -> int:
@@ -53,8 +63,10 @@ def main() -> int:
     env["SMOKE_WEB"] = web
     env["SMOKE_API"] = f"{web}/api/v1"
     env["SECURITY_API_BASE"] = f"{web}/api/v1"
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
+    # Windows venv 的 .pth 可能非 UTF-8；强制 PYTHONUTF8 会导致子进程起不来
+    env.pop("PYTHONUTF8", None)
+    if sys.platform != "win32":
+        env.setdefault("PYTHONIOENCODING", "utf-8")
 
     print()
     print("===== 云端/线上全量核对 =====")
@@ -69,7 +81,7 @@ def main() -> int:
         if args.skip_e2e and name in {"e2e", "extra"}:
             print(f"[跳过] {name}")
             continue
-        script = ROOT / rel
+        script = _script_path(rel)
         if not script.is_file():
             print(f"[失败] 缺少脚本 {rel}")
             results.append((name, 1))
@@ -77,8 +89,8 @@ def main() -> int:
         cmd = [sys.executable, str(script)]
         if is_security:
             cmd.extend(["--base", env["SECURITY_API_BASE"]])
-        print(f"----- {name}: {rel} -----")
-        proc = subprocess.run(cmd, cwd=str(ROOT), env=env, check=False)
+        print(f"----- {name}: {script} -----")
+        proc = subprocess.run(cmd, cwd=str(script.parent), env=env, check=False)
         results.append((name, proc.returncode))
         print(f"----- {name} exit={proc.returncode} -----")
         print()
